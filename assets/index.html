@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>R2 Benchmark</title>
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+    <main class="page">
+        <header class="header">
+            <div>
+                <h1>R2 benchmark</h1>
+                <p class="muted">Start a benchmark job and watch the metrics update.</p>
+            </div>
+            <nav class="nav" aria-label="Primary">
+                <a href="/jobs.html">Jobs</a>
+            </nav>
+        </header>
+
+        <section class="panel">
+            <h2>Start job</h2>
+            <form id="startForm" class="form">
+                <div class="field">
+                    <label for="targetRPS">Target RPS</label>
+                    <input id="targetRPS" type="number" value="1000" min="0" step="100" required />
+                </div>
+
+                <div class="field">
+                    <label for="concurrency">Spawns</label>
+                    <input id="concurrency" type="number" value="25" min="1" step="1" required />
+                </div>
+
+                <div class="field">
+                    <label for="duration">Duration (minutes)</label>
+                    <input id="duration" type="number" value="5" min="1" max="15" step="1" required />
+                </div>
+
+                <button id="startButton" type="submit">Start</button>
+                <p id="message" class="message" role="status"></p>
+            </form>
+        </section>
+    </main>
+
+    <script>
+        const form = document.getElementById("startForm");
+        const button = document.getElementById("startButton");
+        const message = document.getElementById("message");
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            button.disabled = true;
+            message.className = "message";
+            message.textContent = "Starting...";
+
+            try {
+                const response = await fetch("/api/v1/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        targetRPS: Number(document.getElementById("targetRPS").value),
+                        concurrency: Number(document.getElementById("concurrency").value),
+                        duration: Number(document.getElementById("duration").value),
+                    }),
+                });
+
+                const data = await response.json();
+                if (!response.ok || !data.jobId) {
+                    throw new Error(data.message || "Missing jobId in response");
+                }
+
+                window.location.href = `/watch.html?jobId=${encodeURIComponent(data.jobId)}`;
+            } catch (error) {
+                message.className = "message error";
+                message.textContent = error instanceof Error ? error.message : String(error);
+                button.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { JobSpawnRequest, JobStartRequest, JobStartResponse, NoOp, SpawnMetric, WatchRequest, WatchResponse } from "./types";
+import { JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, NoOp, SpawnMetric, WatchRequest, WatchResponse } from "./types";
 
 export async function orchestrator_route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -7,6 +7,9 @@ export async function orchestrator_route(request: Request, env: Env, ctx: Execut
         switch (url.pathname) {
             case "/": {
                 return env.ASSETS.fetch(`${url.protocol}//${url.host}/index.html`)
+            }
+            case "/api/v1/jobs": {
+                return Response.json(await list_jobs(env));
             }
         }
     }
@@ -23,6 +26,9 @@ export async function orchestrator_route(request: Request, env: Env, ctx: Execut
             case "/api/v1/watch": {
                 const data = await watch_job(request, env, ctx);
                 return Response.json(data);
+            }
+            case "/api/v1/stop": {
+                return Response.json(await stop_job(request, env));
             }
             case "/api/v1/start": {
                 return Response.json(await start_job(request, env, ctx));
@@ -118,4 +124,41 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
         rps: job['RPS'] as number,
         metrics
     }
+}
+
+async function list_jobs(env: Env): Promise<JobsResponse> {
+    const rawJobs = await env.DB.prepare(`SELECT JOB_ID, STATUS, RPS, CONCURRENCY, DURATION, CREATED_AT, UPDATED_AT
+             FROM JOBS
+             ORDER BY CREATED_AT DESC
+             LIMIT 200`)
+        .all();
+
+    const jobs: JobSummary[] = rawJobs.results.map((job) => ({
+        jobId: job['JOB_ID'] as string,
+        status: job['STATUS'] as string,
+        rps: job['RPS'] as number,
+        concurrency: job['CONCURRENCY'] as number,
+        duration: job['DURATION'] as number,
+        created_at: job['CREATED_AT'] as string,
+        updated_at: job['UPDATED_AT'] as string,
+    }));
+
+    return { jobs };
+}
+
+async function stop_job(request: Request, env: Env): Promise<{ jobId: string, status: string, message?: string }> {
+    const stopRequest = await request.json() as WatchRequest;
+    if (!stopRequest.jobId) {
+        return { jobId: "unknown", status: "error", message: "No JobID provided" };
+    }
+
+    const result = await env.DB.prepare(`UPDATE JOBS SET STATUS = 'STOPPED' WHERE JOB_ID = ? AND STATUS NOT IN ('COMPLETED', 'STOPPED', 'FAILED')`)
+        .bind(stopRequest.jobId)
+        .run();
+
+    return {
+        jobId: stopRequest.jobId,
+        status: "STOPPED",
+        message: result.meta.changes ? "Stop requested" : "Job was already finished or does not exist",
+    };
 }

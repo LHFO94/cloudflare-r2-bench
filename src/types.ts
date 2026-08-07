@@ -49,6 +49,20 @@ export type WatchResponse = {
     metrics: SpawnMetric[]
 }
 
+export type JobSummary = {
+    jobId: string,
+    status: string,
+    rps: number,
+    concurrency: number,
+    duration: number,
+    created_at: string,
+    updated_at: string,
+}
+
+export type JobsResponse = {
+    jobs: JobSummary[],
+}
+
 export type SpawnStatus = {
     spawnId: string;
     avgLatency: number;

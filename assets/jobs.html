@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jobs | R2 Benchmark</title>
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+    <main class="page">
+        <header class="header">
+            <div>
+                <h1>Jobs</h1>
+                <p class="muted">Latest benchmark jobs, newest first.</p>
+            </div>
+            <nav class="nav" aria-label="Primary">
+                <a href="/">Start job</a>
+            </nav>
+        </header>
+
+        <section class="panel">
+            <div class="header">
+                <h2>Recent jobs</h2>
+                <button id="refreshButton" class="secondary" type="button">Refresh</button>
+            </div>
+            <p id="message" class="message" role="status">Loading...</p>
+            <div class="table-scroll">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Status</th>
+                            <th>RPS</th>
+                            <th>Spawns</th>
+                            <th>Duration</th>
+                            <th>Created</th>
+                            <th>Updated</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobRows">
+                        <tr><td colspan="8">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const rows = document.getElementById("jobRows");
+        const message = document.getElementById("message");
+        const refreshButton = document.getElementById("refreshButton");
+
+        function number(value, digits = 0) {
+            const n = Number(value);
+            return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: digits }) : "-";
+        }
+
+        function dateTime(value) {
+            if (!value) return "-";
+            const d = new Date(value);
+            return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+        }
+
+        function statusClass(status) {
+            return `pill status-${String(status || "unknown").toLowerCase()}`;
+        }
+
+        function renderJobs(jobs) {
+            if (!jobs.length) {
+                rows.innerHTML = `<tr><td colspan="8">No jobs found</td></tr>`;
+                return;
+            }
+
+            rows.innerHTML = jobs.map((job) => `
+                <tr>
+                    <td>${job.jobId}</td>
+                    <td><span class="${statusClass(job.status)}">${job.status || "unknown"}</span></td>
+                    <td>${number(job.rps)}</td>
+                    <td>${number(job.concurrency)}</td>
+                    <td>${number(job.duration)} min</td>
+                    <td>${dateTime(job.created_at)}</td>
+                    <td>${dateTime(job.updated_at)}</td>
+                    <td><a href="/watch.html?jobId=${encodeURIComponent(job.jobId)}">watch</a></td>
+                </tr>
+            `).join("");
+        }
+
+        async function loadJobs() {
+            refreshButton.disabled = true;
+            message.className = "message";
+            message.textContent = "Loading...";
+
+            try {
+                const response = await fetch("/api/v1/jobs");
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                renderJobs(Array.isArray(data.jobs) ? data.jobs : []);
+                message.className = "message ok";
+                message.textContent = `Loaded ${Array.isArray(data.jobs) ? data.jobs.length : 0} jobs`;
+            } catch (error) {
+                message.className = "message error";
+                message.textContent = error instanceof Error ? error.message : String(error);
+                rows.innerHTML = `<tr><td colspan="8">Failed to load jobs</td></tr>`;
+            } finally {
+                refreshButton.disabled = false;
+            }
+        }
+
+        refreshButton.addEventListener("click", loadJobs);
+        loadJobs();
+    </script>
+</body>
+</html>

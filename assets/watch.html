@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Watch R2 Benchmark</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+</head>
+<body>
+    <main class="page">
+        <header class="header">
+            <div>
+                <h1>Job <span id="jobId">-</span></h1>
+                <div class="meta">
+                    <span>Created: <strong id="createdAt">-</strong></span>
+                    <span>Last poll: <strong id="lastPoll">-</strong></span>
+                    <span id="pollState">loading</span>
+                </div>
+            </div>
+            <div class="actions">
+                <nav class="nav" aria-label="Primary">
+                    <a href="/jobs.html">Jobs</a>
+                </nav>
+                <button id="stopButton" class="danger" type="button">Stop</button>
+                <span id="status" class="pill status-unknown">unknown</span>
+            </div>
+        </header>
+
+        <section class="grid summary">
+            <div class="card">
+                <div class="label">RPS</div>
+                <div id="rps" class="value">-</div>
+            </div>
+            <div class="card">
+                <div class="label">Latency</div>
+                <div id="latency" class="value">-</div>
+            </div>
+            <div class="card">
+                <div class="label">Samples</div>
+                <div id="samples" class="value">0</div>
+            </div>
+            <div class="card">
+                <div class="label">Status</div>
+                <div id="statusText" class="value">-</div>
+            </div>
+        </section>
+
+        <section class="layout">
+            <div class="charts">
+                <section class="panel">
+                    <h2>RPS over time</h2>
+                    <div class="chart-wrap"><canvas id="rpsChart"></canvas></div>
+                </section>
+                <section class="panel">
+                    <h2>Latency over time</h2>
+                    <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+                </section>
+            </div>
+
+            <section class="panel">
+                <h2>Recent samples</h2>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>RPS</th>
+                                <th>Latency</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sampleRows">
+                            <tr><td colspan="3">No data yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+    </main>
+
+    <script>
+        const params = new URL(window.location.href).searchParams;
+        const jobId = params.get("jobId");
+        const pollMs = 5000;
+
+        const el = {
+            jobId: document.getElementById("jobId"),
+            createdAt: document.getElementById("createdAt"),
+            lastPoll: document.getElementById("lastPoll"),
+            pollState: document.getElementById("pollState"),
+            status: document.getElementById("status"),
+            statusText: document.getElementById("statusText"),
+            rps: document.getElementById("rps"),
+            latency: document.getElementById("latency"),
+            samples: document.getElementById("samples"),
+            sampleRows: document.getElementById("sampleRows"),
+            stopButton: document.getElementById("stopButton"),
+        };
+
+        let loading = false;
+        let rpsChart;
+        let latencyChart;
+
+        if (!jobId) {
+            el.pollState.textContent = "missing jobId";
+            throw new Error("missing jobId");
+        }
+
+        el.jobId.textContent = jobId;
+
+        function number(value, digits = 1) {
+            const n = Number(value);
+            return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: digits }) : "-";
+        }
+
+        function time(value) {
+            if (!value) return "-";
+            const d = new Date(value);
+            return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleTimeString();
+        }
+
+        function dateTime(value) {
+            if (!value) return "-";
+            const d = new Date(value);
+            return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+        }
+
+        function statusClass(status) {
+            return `pill status-${String(status || "unknown").toLowerCase()}`;
+        }
+
+        function canStop(status) {
+            return !["completed", "stopped", "stopping", "failed"].includes(String(status || "").toLowerCase());
+        }
+
+        function makeChart(id, label, color) {
+            return new Chart(document.getElementById(id), {
+                type: "line",
+                data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 2, pointRadius: 1, tension: 0.2 }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: { y: { beginAtZero: true } },
+                },
+            });
+        }
+
+        function ensureCharts() {
+            if (!rpsChart) rpsChart = makeChart("rpsChart", "RPS", "#2563eb");
+            if (!latencyChart) latencyChart = makeChart("latencyChart", "Latency", "#b45309");
+        }
+
+        function metricTime(metric, index) {
+            return metric.createdAt || metric.created_at || metric.CREATED_AT || String(index + 1);
+        }
+
+        function updateCharts(metrics) {
+            ensureCharts();
+            const labels = metrics.map((metric, index) => time(metricTime(metric, index)));
+            rpsChart.data.labels = labels;
+            rpsChart.data.datasets[0].data = metrics.map((metric) => Number(metric.rps || 0));
+            latencyChart.data.labels = labels;
+            latencyChart.data.datasets[0].data = metrics.map((metric) => Number(metric.latency || 0));
+            rpsChart.update();
+            latencyChart.update();
+        }
+
+        function updateTable(metrics) {
+            const rows = metrics.slice().reverse().slice(0, 20);
+            if (rows.length === 0) {
+                el.sampleRows.innerHTML = `<tr><td colspan="3">No data yet</td></tr>`;
+                return;
+            }
+
+            el.sampleRows.innerHTML = rows.map((metric, index) => `
+                <tr>
+                    <td>${time(metricTime(metric, index))}</td>
+                    <td>${number(metric.rps)}</td>
+                    <td>${number(metric.latency)} ms</td>
+                </tr>
+            `).join("");
+        }
+
+        function render(data) {
+            const metrics = Array.isArray(data.metrics) ? data.metrics.slice().reverse() : [];
+            const latest = metrics[metrics.length - 1] || {};
+
+            el.createdAt.textContent = dateTime(data.created_at || data.createdAt);
+            el.status.textContent = data.status || "unknown";
+            el.status.className = statusClass(data.status);
+            el.statusText.textContent = data.status || "-";
+            el.stopButton.disabled = !canStop(data.status);
+            el.rps.textContent = number(latest.rps ?? data.rps);
+            el.latency.textContent = `${number(latest.latency ?? data.latency)} ms`;
+            el.samples.textContent = metrics.length.toLocaleString();
+            el.lastPoll.textContent = time(new Date());
+
+            updateCharts(metrics);
+            updateTable(metrics);
+        }
+
+        async function poll() {
+            if (loading) return;
+            loading = true;
+            el.pollState.textContent = "polling";
+
+            try {
+                const response = await fetch("/api/v1/watch", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ jobId }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                render(data);
+                el.pollState.textContent = "ok";
+            } catch (error) {
+                el.pollState.textContent = error instanceof Error ? error.message : String(error);
+            } finally {
+                loading = false;
+            }
+        }
+
+        async function stopJob() {
+            el.stopButton.disabled = true;
+            el.pollState.textContent = "stopping";
+
+            try {
+                const response = await fetch("/api/v1/stop", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ jobId }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                el.status.textContent = data.status || "STOPPING";
+                el.status.className = statusClass(data.status);
+                el.statusText.textContent = data.status || "STOPPING";
+                await poll();
+            } catch (error) {
+                el.pollState.textContent = error instanceof Error ? error.message : String(error);
+                el.stopButton.disabled = false;
+            }
+        }
+
+        ensureCharts();
+        el.stopButton.addEventListener("click", stopJob);
+        poll();
+        setInterval(poll, pollMs);
+    </script>
+</body>
+</html>

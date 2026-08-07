@@ -71,28 +71,30 @@ export async function continue_bench(spawnid: string, spawnRequest: JobSpawnRequ
 }
 
 async function updateD1AfterSpawnCompletion(env: Env, spawnStatus: SpawnStatus, spawnRequest: JobSpawnRequest) {
-    await env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = 'COMPLETED' WHERE SPAWN_ID = ?`)
-        .bind(spawnStatus.spawnId)
+    const job = await env.DB.prepare(`SELECT STATUS FROM JOBS WHERE JOB_ID = ?`)
+        .bind(spawnRequest.jobId)
+        .first();
+    const jobStatus = job?.['STATUS'] as string | undefined;
+    const finalSpawnStatus = jobStatus === 'STOPPING' ? 'STOPPED' : 'COMPLETED';
+
+    await env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = ? WHERE SPAWN_ID = ?`)
+        .bind(finalSpawnStatus, spawnStatus.spawnId)
         .run();
 
-    const allSpawns = await env.DB.prepare(`
-           SELECT JOB_ID, STATUS
+    const activeSpawns = await env.DB.prepare(`
+           SELECT COUNT(*) AS COUNT
            FROM JOB_SPAWNS
-           WHERE JOB_ID = ?`)
+           WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
         .bind(spawnRequest.jobId)
-        .all();
+        .first();
 
-    let allSpawnStatus: { [key: string]: number; } = {};
-    for (const spawn of allSpawns.results) {
-        const status = spawn['STATUS'] as string;
-        allSpawnStatus[status] += 1;
+    if ((activeSpawns?.['COUNT'] as number | undefined) !== 0) {
+        return;
     }
 
-    if ((!allSpawnStatus['COMPLETED']) || allSpawnStatus['COMPLETED'] === 0) {
-        await env.DB.prepare(`UPDATE JOBS SET STATUS = 'COMPLETED' WHERE JOB_ID = ?`)
-            .bind(spawnRequest.jobId)
-            .run();
-    }
+    await env.DB.prepare(`UPDATE JOBS SET STATUS = ? WHERE JOB_ID = ?`)
+        .bind(jobStatus === 'STOPPING' ? 'STOPPED' : 'COMPLETED', spawnRequest.jobId)
+        .run();
 }
 
 export async function spawn_job(spawnRequest: JobSpawnRequest, env: Env, ctx: ExecutionContext<unknown>) {
@@ -114,7 +116,7 @@ async function shouldStop(status: SpawnStatus, spawnRequest: JobSpawnRequest, en
             console.warn(`Error while checking status for JOB ${spawnRequest.jobId}. No data found in D1`);
         } else {
             const status = res['STATUS'] as string;
-            if (status in ['STOPPED', 'STOPPING', 'FAILED']) {
+            if (['STOPPED', 'STOPPING', 'FAILED'].includes(status)) {
                 return true;
             }
         }
@@ -154,4 +156,3 @@ async function maybeUpdateD1(status: SpawnStatus, spawnRequest: JobSpawnRequest,
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
