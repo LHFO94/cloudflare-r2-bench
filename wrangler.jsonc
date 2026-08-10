@@ -19,8 +19,104 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"r2_buckets": [
 		{
-			"bucket_name": "r2-bench",
-			"binding": "R2",
+			"bucket_name": "r2-bench-00",
+			"binding": "R2_00",
+		},
+		{
+			"bucket_name": "r2-bench-01",
+			"binding": "R2_01",
+		},
+		{
+			"bucket_name": "r2-bench-02",
+			"binding": "R2_02",
+		},
+		{
+			"bucket_name": "r2-bench-03",
+			"binding": "R2_03",
+		},
+		{
+			"bucket_name": "r2-bench-04",
+			"binding": "R2_04",
+		},
+		{
+			"bucket_name": "r2-bench-05",
+			"binding": "R2_05",
+		},
+		{
+			"bucket_name": "r2-bench-06",
+			"binding": "R2_06",
+		},
+		{
+			"bucket_name": "r2-bench-07",
+			"binding": "R2_07",
+		},
+		{
+			"bucket_name": "r2-bench-08",
+			"binding": "R2_08",
+		},
+		{
+			"bucket_name": "r2-bench-09",
+			"binding": "R2_09",
+		},
+		{
+			"bucket_name": "r2-bench-10",
+			"binding": "R2_10",
+		},
+		{
+			"bucket_name": "r2-bench-11",
+			"binding": "R2_11",
+		},
+		{
+			"bucket_name": "r2-bench-12",
+			"binding": "R2_12",
+		},
+		{
+			"bucket_name": "r2-bench-13",
+			"binding": "R2_13",
+		},
+		{
+			"bucket_name": "r2-bench-14",
+			"binding": "R2_14",
+		},
+		{
+			"bucket_name": "r2-bench-15",
+			"binding": "R2_15",
+		},
+		{
+			"bucket_name": "r2-bench-16",
+			"binding": "R2_16",
+		},
+		{
+			"bucket_name": "r2-bench-17",
+			"binding": "R2_17",
+		},
+		{
+			"bucket_name": "r2-bench-18",
+			"binding": "R2_18",
+		},
+		{
+			"bucket_name": "r2-bench-19",
+			"binding": "R2_19",
+		},
+		{
+			"bucket_name": "r2-bench-20",
+			"binding": "R2_20",
+		},
+		{
+			"bucket_name": "r2-bench-21",
+			"binding": "R2_21",
+		},
+		{
+			"bucket_name": "r2-bench-22",
+			"binding": "R2_22",
+		},
+		{
+			"bucket_name": "r2-bench-23",
+			"binding": "R2_23",
+		},
+		{
+			"bucket_name": "r2-bench-24",
+			"binding": "R2_24",
 		},
 	],
 	"queues": {

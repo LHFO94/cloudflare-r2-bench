@@ -1,6 +1,7 @@
 import { JobSpawnContinue, JobSpawnRequest, SpawnStatus } from "./types";
 
 const MAX_PARALLEL_R2_GETS = 6;
+const R2_OBJECT_KEY = '/bench.tar';
 
 export async function continue_bench(spawnid: string, spawnRequest: JobSpawnRequest, env: Env, spawnStatus?: SpawnStatus) {
     if (!spawnStatus) {
@@ -170,12 +171,47 @@ async function getR2Latency(env: Env): Promise<{ ok: boolean, latency: number, e
     const startedAt = new Date().getTime();
 
     try {
-        const data = await env.R2.get('/bench.tar');
+        const data = await getRandomR2Bucket(env).get(R2_OBJECT_KEY);
         await data?.body?.cancel();
         return { ok: true, latency: new Date().getTime() - startedAt };
     } catch (error) {
         return { ok: false, latency: new Date().getTime() - startedAt, error };
     }
+}
+
+function getRandomR2Bucket(env: Env): R2Bucket {
+    const buckets = getR2Buckets(env);
+    return buckets[Math.floor(Math.random() * buckets.length)];
+}
+
+function getR2Buckets(env: Env): R2Bucket[] {
+    return [
+        env.R2_00,
+        env.R2_01,
+        env.R2_02,
+        env.R2_03,
+        env.R2_04,
+        env.R2_05,
+        env.R2_06,
+        env.R2_07,
+        env.R2_08,
+        env.R2_09,
+        env.R2_10,
+        env.R2_11,
+        env.R2_12,
+        env.R2_13,
+        env.R2_14,
+        env.R2_15,
+        env.R2_16,
+        env.R2_17,
+        env.R2_18,
+        env.R2_19,
+        env.R2_20,
+        env.R2_21,
+        env.R2_22,
+        env.R2_23,
+        env.R2_24,
+    ];
 }
 
 function sleep(ms: number): Promise<void> {
