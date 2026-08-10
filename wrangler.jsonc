@@ -34,7 +34,6 @@
 			{
 				"queue": "r2bench-spawns",
 				"max_batch_size": 1,
-				"max_concurrency": 250,
 			},
 		],
 	},

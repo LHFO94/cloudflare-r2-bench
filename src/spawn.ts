@@ -1,5 +1,6 @@
-import { stat } from "node:fs";
 import { JobSpawnContinue, JobSpawnRequest, SpawnStatus } from "./types";
+
+const MAX_PARALLEL_R2_GETS = 6;
 
 export async function continue_bench(spawnid: string, spawnRequest: JobSpawnRequest, env: Env, spawnStatus?: SpawnStatus) {
     if (!spawnStatus) {
@@ -29,25 +30,28 @@ export async function continue_bench(spawnid: string, spawnRequest: JobSpawnRequ
             break;
         }
 
-        const startFetching = new Date().getTime();
-
-        try {
-            const data = await env.R2.get('/bench.tar')
-        } catch (err) {
-            console.error(`Failed fetching R2 data, error: ${err}`);
-        }
+        const batchSize = getR2BatchSize(spawnRequest.targetRPS, spawnStatus.avgLatency);
+        const batchStartedAt = new Date().getTime();
+        const results = await Promise.all(Array.from({ length: batchSize }, () => getR2Latency(env)));
         const now = new Date().getTime();
-        const latency = now - startFetching;
 
-        spawnStatus.count += 1;
-        spawnStatus.tenCount += 1;
+        for (const result of results) {
+            if (!result.ok) {
+                console.error(`Failed fetching R2 data, error: ${result.error}`);
+            }
+
+            spawnStatus.count += 1;
+            spawnStatus.tenCount += 1;
+            spawnStatus.totalLatency += result.latency;
+            spawnStatus.tenTotalLatency += result.latency;
+        }
+
         spawnStatus.duration = now - spawnStatus.startedAt;
-        spawnStatus.totalLatency += latency;
-        spawnStatus.tenTotalLatency += latency;
         spawnStatus.actualRPS = spawnStatus.duration < 1000 ? spawnStatus.count : (spawnStatus.count / (spawnStatus.duration / 1000))
         spawnStatus.avgLatency = spawnStatus.totalLatency / spawnStatus.count;
 
         if (await maybeUpdateD1(spawnStatus, spawnRequest, env)) {
+            // Quiting the workers right now and sending a message into the queue to continue
             const continueMessage: JobSpawnContinue = {
                 type: "spawn_continue",
                 request: spawnRequest,
@@ -57,11 +61,12 @@ export async function continue_bench(spawnid: string, spawnRequest: JobSpawnRequ
             break;
         }
 
-        const estimatedSleep = Math.min(Math.floor(((spawnRequest.targetRPS + 1) / spawnStatus.avgLatency) - 1));
-        if (estimatedSleep <= 0) {
-            console.warn(`R2 latency too hight (${Math.ceil(spawnStatus.avgLatency)}ms), can't match target RPS (${spawnRequest.targetRPS})`)
+        const targetBatchDuration = Math.ceil((batchSize / spawnRequest.targetRPS) * 1000);
+        const estimatedSleep = targetBatchDuration - (now - batchStartedAt) - 1;
+        if (estimatedSleep <= 0 && batchSize === MAX_PARALLEL_R2_GETS) {
+            console.warn(`R2 latency too high (${Math.ceil(spawnStatus.avgLatency)}ms), can't match target RPS (${spawnRequest.targetRPS}) with ${MAX_PARALLEL_R2_GETS} parallel gets`)
         } else {
-            await sleep(estimatedSleep);
+            await sleep(Math.max(estimatedSleep, 0));
         }
     }
 
@@ -151,6 +156,26 @@ async function maybeUpdateD1(status: SpawnStatus, spawnRequest: JobSpawnRequest,
     status.tenTick += 1;
 
     return true;
+}
+
+function getR2BatchSize(targetRPS: number, avgLatency: number): number {
+    if (!avgLatency || avgLatency <= 0) {
+        return 1;
+    }
+
+    return Math.min(MAX_PARALLEL_R2_GETS, Math.max(1, Math.ceil((targetRPS * avgLatency) / 1000)));
+}
+
+async function getR2Latency(env: Env): Promise<{ ok: boolean, latency: number, error?: unknown }> {
+    const startedAt = new Date().getTime();
+
+    try {
+        const data = await env.R2.get('/bench.tar');
+        await data?.body?.cancel();
+        return { ok: true, latency: new Date().getTime() - startedAt };
+    } catch (error) {
+        return { ok: false, latency: new Date().getTime() - startedAt, error };
+    }
 }
 
 function sleep(ms: number): Promise<void> {
