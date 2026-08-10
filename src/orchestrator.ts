@@ -92,14 +92,13 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
     if (!job) {
         return { jobId: watchRequest.jobId, status: "unknown", message: "Job ID doesn't exist", metrics: [] };
     }
-    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(COUNT) AS COUNT, MIN(CREATED_AT) AS CREATED_AT
+    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(COUNT) / 60.0 AS RPS, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
              FROM JOB_SPAWN_METRICS
-             WHERE JOB_ID = ? 
-             GROUP BY JOB_ID, TICK_NUMBER
-             HAVING COUNT(RPS) >= ?
-             ORDER BY TICK_NUMBER DESC 
+             WHERE JOB_ID = ? AND CREATED_AT < strftime('%Y-%m-%d %H:%M:00', 'now')
+             GROUP BY strftime('%Y-%m-%d %H:%M:00', CREATED_AT)
+             ORDER BY CREATED_AT DESC
              LIMIT 300`)
-        .bind(watchRequest.jobId, job['CONCURRENCY'] as number)
+        .bind(watchRequest.jobId)
         .all();
 
     let metrics: SpawnMetric[] = [];
