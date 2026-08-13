@@ -25,8 +25,8 @@ export async function verify_benchmark_container(env: Env, spawnId: string, toke
 export async function record_benchmark_metrics(env: Env, report: SpawnMetricsReport): Promise<void> {
     const metricId = `${report.spawnId}-${Date.now()}`;
 
-    await env.DB.prepare(`INSERT INTO JOB_SPAWN_METRICS (METRIC_ID, SPAWN_ID, JOB_ID, TICK_NUMBER, LATENCY, RPS, COUNT) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .bind(metricId, report.spawnId, report.jobId, report.tickNumber, report.latency, report.rps, report.count)
+    await env.DB.prepare(`INSERT INTO JOB_SPAWN_METRICS (METRIC_ID, SPAWN_ID, JOB_ID, TICK_NUMBER, LATENCY, RPS, ERROR_M1_RATE, COUNT) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(metricId, report.spawnId, report.jobId, report.tickNumber, report.latency, report.rps, report.errorM1Rate ?? 0, report.count)
         .run();
 
     await env.DB.prepare(`UPDATE JOB_SPAWNS SET AVG_LATENCY = ?, AVG_RPS = ?, COUNT = ? WHERE SPAWN_ID = ?`)

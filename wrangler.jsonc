@@ -25,9 +25,12 @@
 			"class_name": "BenchmarkContainer",
 			"image": "./container/r2bench/Dockerfile",
 			"image_build_context": "./container/r2bench",
-			"instance_type": "standard-4",
+			"instance_type": "standard-1",
 			"max_instances": 100,
 			"rollout_step_percentage": [100],
+			"constraints": {
+				"regions": ["WEUR"],
+			},
 		},
 	],
 	"durable_objects": {

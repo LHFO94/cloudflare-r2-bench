@@ -5,7 +5,6 @@ import { complete_benchmark_spawn, record_benchmark_metrics } from "./spawn";
 const METRICS_PORT = 8080;
 const INITIAL_METRICS_POLL_SECONDS = 5;
 const METRICS_POLL_INTERVAL_SECONDS = 10;
-const JAVA_CONTAINER_CONCURRENCY = 250;
 const REQUEST_STORAGE_KEY = "request";
 const TOKEN_STORAGE_KEY = "token";
 const STARTED_AT_STORAGE_KEY = "startedAt";
@@ -23,6 +22,7 @@ export type ParsedContainerMetrics = {
     totalCount: number;
     latency: number;
     meanRate: number;
+    errorM1Rate: number;
 }
 
 export type BenchmarkIterationResult = {
@@ -69,7 +69,7 @@ export class BenchmarkContainer extends DurableObject<Env> {
             this.ctx.container.start({
                 enableInternet: true,
                 env: {
-                    CONCURRENCY: String(JAVA_CONTAINER_CONCURRENCY),
+                    CONCURRENCY: String(Math.floor(spawnRequest.concurrentCallsPerSpawn)),
                     TARGET_RPS: String(Math.floor(spawnRequest.targetRPS)),
                     DURATION: String(Math.floor(spawnRequest.duration)),
                     METRICS_PORT: String(METRICS_PORT),
@@ -162,6 +162,7 @@ export class BenchmarkContainer extends DurableObject<Env> {
             tickNumber,
             latency: metrics.latency,
             rps: metrics.meanRate,
+            errorM1Rate: metrics.errorM1Rate,
             count: intervalCount,
             avgLatency: metrics.latency,
             actualRPS: metrics.meanRate,
@@ -215,21 +216,22 @@ export function getSpawnId(spawnRequest: JobSpawnRequest): string {
 export function parseContainerMetrics(value: unknown): ParsedContainerMetrics | undefined {
     const metrics = getRecord(value);
     const timer = getRecord(getRecord(metrics?.timers)?.countTimer);
+    const errorTimer = getRecord(getRecord(metrics?.timers)?.error);
     if (!timer) {
         return undefined;
     }
 
     const totalCount = getFiniteNumber(timer.count);
-    const meanRate = getFiniteNumber(timer.mean_rate);
-    const timerLatency = getFiniteNumber(timer.mean);
+    const meanRate = getFiniteNumber(timer.m1_rate);
+    const errorM1Rate = getFiniteNumber(errorTimer?.m1_rate) ?? 0;
     const histogramLatency = getFiniteNumber(getRecord(getRecord(metrics?.histograms)?.latency)?.mean);
-    const latency = timerLatency ?? histogramLatency;
+    const latency = histogramLatency;
 
     if (totalCount === undefined || meanRate === undefined || latency === undefined) {
         return undefined;
     }
 
-    return { totalCount, meanRate, latency };
+    return { totalCount, meanRate, latency, errorM1Rate };
 }
 
 export function getRecord(value: unknown): Record<string, unknown> | undefined {

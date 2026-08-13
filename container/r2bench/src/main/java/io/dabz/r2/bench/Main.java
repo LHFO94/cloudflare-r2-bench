@@ -5,20 +5,23 @@ import org.eclipse.jetty.server.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.LinkedList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class Main {
-	Logger logger = LoggerFactory.getLogger(Main.class);
+	static Logger logger = LoggerFactory.getLogger(Main.class);
 
 	public static void main(String[] args) throws Exception {
+		java.security.Security.setProperty("networkaddress.cache.ttl", "1000");
 		Main main = new Main();
 		try {
 			main.run();
 		} catch (Exception e) {
-			e.printStackTrace();
+			logger.error("Unexpected error", e);
 			System.exit(1);
 		}
 	}
@@ -32,6 +35,7 @@ public class Main {
 		String s3ClientSecret = System.getenv("S3_CLIENT_SECRET");
 		String s3Uri = System.getenv("S3_URI");
 
+		prefetch(s3Uri);
 		validateConfiguration(concurrency, targetRps, metricsPort, s3ClientId, s3ClientSecret, s3Uri);
 		Coordinator.init(concurrency, targetRps);
 
@@ -50,6 +54,7 @@ public class Main {
 					R2BenchThread task = new R2BenchThread(s3ClientId, s3ClientSecret, s3Uri);
 					executorService.submit(task);
 					taskLists.push(task);
+					Thread.sleep(15_000); // backoff time between each tasks to avoid overloading R2 right away
 				}
 
 				Thread.sleep((long) duration * 60 * 1000);
@@ -57,13 +62,24 @@ public class Main {
 					task.isRunning.set(false);
 				}
 
-				if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+				if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
 					logger.warn("Timing out while waiting for all tasks to finalize");
 				}
 			}
 		} finally {
 			reporter.stop();
 			metricsServer.stop();
+		}
+	}
+
+	private void prefetch(String hostname) {
+		try {
+			String host = hostname.replaceAll("https?://", "");
+			InetAddress[] addresses = InetAddress.getAllByName(host);
+			logger.info("DNS Prefetch Success: prefeteched {}", host);
+		} catch (UnknownHostException e) {
+			logger.error("DNS Prefetch Failed: Could not resolve {} ", hostname, e);
+			throw new RuntimeException(e);
 		}
 	}
 

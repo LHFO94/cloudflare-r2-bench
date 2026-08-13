@@ -1,6 +1,8 @@
 import { complete_benchmark_spawn, record_benchmark_metrics, stop_benchmark_container, verify_benchmark_container } from "./spawn";
 import { JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, SpawnCompletionReport, SpawnMetric, SpawnMetricsReport, SpawnStatusRequest, WatchRequest, WatchResponse } from "./types";
 
+const MAX_CONTAINERS_PER_JOB = 99;
+
 export async function orchestrator_route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
@@ -55,10 +57,14 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
     const requestJobStart = await request.json() as JobStartRequest;
     const targetRPS = Math.floor(requestJobStart.targetRPS);
     const concurrency = Math.floor(requestJobStart.concurrency);
+    const concurrentCallsPerSpawn = Math.floor(requestJobStart.concurrentCallsPerSpawn ?? 10);
     const duration = Math.floor(requestJobStart.duration);
 
-    if (!Number.isFinite(targetRPS) || !Number.isFinite(concurrency) || !Number.isFinite(duration) || targetRPS <= 0 || concurrency <= 0 || duration <= 0) {
+    if (!Number.isFinite(targetRPS) || !Number.isFinite(concurrency) || !Number.isFinite(concurrentCallsPerSpawn) || !Number.isFinite(duration) || targetRPS <= 0 || concurrency <= 0 || concurrentCallsPerSpawn <= 0 || duration <= 0) {
         return {"status": "error", "message": "Invalid request", jobId: undefined, job_request: requestJobStart };
+    }
+    if (concurrency > MAX_CONTAINERS_PER_JOB) {
+        return {"status": "error", "message": `Containers must be less than 100`, jobId: undefined, job_request: requestJobStart };
     }
     if (targetRPS < concurrency) {
         return {"status": "error", "message": "Target RPS must be at least the number of containers", jobId: undefined, job_request: requestJobStart };
@@ -76,6 +82,7 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
             jobId: jobId,
             targetRPS: baseTargetRPSPerJob + (jobIndex < extraRPSJobs ? 1 : 0),
             jobIndex: jobIndex,
+            concurrentCallsPerSpawn,
             duration
         };
         spawnJobs.push(spawnJob);
@@ -119,9 +126,9 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
     if (!job) {
         return { jobId: watchRequest.jobId, status: "unknown", message: "Job ID doesn't exist", metrics: [] };
     }
-    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(COUNT) AS COUNT, CREATED_AT
+    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(ERROR_M1_RATE) AS ERROR_M1_RATE, SUM(COUNT) AS COUNT, CREATED_AT
              FROM (
-                SELECT SPAWN_ID, AVG(LATENCY) AS LATENCY, AVG(RPS) AS RPS, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
+                SELECT SPAWN_ID, AVG(LATENCY) AS LATENCY, AVG(RPS) AS RPS, AVG(COALESCE(ERROR_M1_RATE, 0)) AS ERROR_M1_RATE, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
                 FROM JOB_SPAWN_METRICS
                 WHERE JOB_ID = ? AND CREATED_AT < strftime('%Y-%m-%d %H:%M:00', 'now')
                 GROUP BY SPAWN_ID, strftime('%Y-%m-%d %H:%M:00', CREATED_AT)
@@ -137,11 +144,13 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
     for (const rawMetric of rawMetrics.results) {
         const latency = rawMetric['LATENCY'] as number;
         const rps = rawMetric['RPS'] as number;
+        const errorM1Rate = rawMetric['ERROR_M1_RATE'] as number;
         const createdAt = rawMetric['CREATED_AT'] as string;
 
         metrics.push({
             latency,
             rps,
+            errorM1Rate,
             createdAt
         })
     }

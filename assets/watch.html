@@ -56,6 +56,10 @@
                     <h2>Latency over time</h2>
                     <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
                 </section>
+                <section class="panel">
+                    <h2>Error m1 rate over time</h2>
+                    <div class="chart-wrap"><canvas id="errorM1RateChart"></canvas></div>
+                </section>
             </div>
 
             <section class="panel">
@@ -66,11 +70,12 @@
                             <tr>
                                 <th>Time</th>
                                 <th>RPS</th>
+                                <th>Error m1 rate</th>
                                 <th>Latency</th>
                             </tr>
                         </thead>
                         <tbody id="sampleRows">
-                            <tr><td colspan="3">No data yet</td></tr>
+                            <tr><td colspan="4">No data yet</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -100,6 +105,7 @@
         let loading = false;
         let rpsChart;
         let latencyChart;
+        let errorM1RateChart;
 
         if (!jobId) {
             el.pollState.textContent = "missing jobId";
@@ -149,6 +155,7 @@
         function ensureCharts() {
             if (!rpsChart) rpsChart = makeChart("rpsChart", "RPS", "#2563eb");
             if (!latencyChart) latencyChart = makeChart("latencyChart", "Latency", "#b45309");
+            if (!errorM1RateChart) errorM1RateChart = makeChart("errorM1RateChart", "Error m1 rate", "#dc2626");
         }
 
         function metricTime(metric, index) {
@@ -162,14 +169,17 @@
             rpsChart.data.datasets[0].data = metrics.map((metric) => Number(metric.rps || 0));
             latencyChart.data.labels = labels;
             latencyChart.data.datasets[0].data = metrics.map((metric) => Number(metric.latency || 0));
+            errorM1RateChart.data.labels = labels;
+            errorM1RateChart.data.datasets[0].data = metrics.map((metric) => Number(metric.errorM1Rate || 0));
             rpsChart.update();
             latencyChart.update();
+            errorM1RateChart.update();
         }
 
         function updateTable(metrics) {
             const rows = metrics.slice().reverse().slice(0, 20);
             if (rows.length === 0) {
-                el.sampleRows.innerHTML = `<tr><td colspan="3">No data yet</td></tr>`;
+                el.sampleRows.innerHTML = `<tr><td colspan="4">No data yet</td></tr>`;
                 return;
             }
 
@@ -177,6 +187,7 @@
                 <tr>
                     <td>${time(metricTime(metric, index))}</td>
                     <td>${number(metric.rps)}</td>
+                    <td>${number(metric.errorM1Rate)}</td>
                     <td>${number(metric.latency)} ms</td>
                 </tr>
             `).join("");

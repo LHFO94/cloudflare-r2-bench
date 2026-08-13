@@ -23,17 +23,22 @@
             <form id="startForm" class="form">
                 <div class="field">
                     <label for="targetRPS">Target RPS</label>
-                    <input id="targetRPS" type="number" value="1000" min="0" step="100" required />
+                    <input id="targetRPS" type="number" value="10000" min="0" step="100" required />
                 </div>
 
                 <div class="field">
                     <label for="concurrency">Containers</label>
-                    <input id="concurrency" type="number" value="25" min="1" step="1" required />
+                    <input id="concurrency" type="number" value="10" min="1" max="99" step="1" required />
+                </div>
+
+                <div class="field">
+                    <label for="concurrentCallsPerSpawn">Concurrent calls per spawn</label>
+                    <input id="concurrentCallsPerSpawn" type="number" value="100" min="1" step="1" required />
                 </div>
 
                 <div class="field">
                     <label for="duration">Duration (minutes)</label>
-                    <input id="duration" type="number" value="5" min="1" max="15" step="1" required />
+                    <input id="duration" type="number" value="15" min="1" max="15" step="1" required />
                 </div>
 
                 <button id="startButton" type="submit">Start</button>
@@ -46,6 +51,30 @@
         const form = document.getElementById("startForm");
         const button = document.getElementById("startButton");
         const message = document.getElementById("message");
+        const targetRPS = document.getElementById("targetRPS");
+        const containers = document.getElementById("concurrency");
+        const concurrentCallsPerSpawn = document.getElementById("concurrentCallsPerSpawn");
+
+        const rpsPerThread = 10;
+        const defaultConcurrentCallsPerSpawn = 10;
+        const maxContainers = 99;
+
+        function updateSizingFromTargetRPS() {
+            const target = Math.max(1, Math.floor(Number(targetRPS.value)) || 1);
+            const threadsNeeded = Math.ceil(target / rpsPerThread);
+            let callsPerSpawn = defaultConcurrentCallsPerSpawn;
+            let containerCount = Math.ceil(threadsNeeded / callsPerSpawn);
+
+            if (containerCount > maxContainers) {
+                containerCount = maxContainers;
+                callsPerSpawn = Math.ceil(threadsNeeded / containerCount);
+            }
+
+            containers.value = String(Math.max(1, containerCount));
+            concurrentCallsPerSpawn.value = String(Math.max(1, callsPerSpawn));
+        }
+
+        targetRPS.addEventListener("input", updateSizingFromTargetRPS);
 
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -60,6 +89,7 @@
                     body: JSON.stringify({
                         targetRPS: Number(document.getElementById("targetRPS").value),
                         concurrency: Number(document.getElementById("concurrency").value),
+                        concurrentCallsPerSpawn: Number(document.getElementById("concurrentCallsPerSpawn").value),
                         duration: Number(document.getElementById("duration").value),
                     }),
                 });

@@ -14,4 +14,4 @@ WORKDIR /app
 COPY --from=build /build/target/r2bench-1.0-SNAPSHOT.jar /app/r2bench.jar
 
 EXPOSE 8080
-ENTRYPOINT ["java", "-Dnetworkaddress.cache.ttl=-1", "-jar", "/app/r2bench.jar"]
+ENTRYPOINT ["java", "-jar", "/app/r2bench.jar"]

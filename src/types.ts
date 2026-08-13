@@ -1,6 +1,7 @@
 export type JobStartRequest = {
     targetRPS: number,
     concurrency: number,
+    concurrentCallsPerSpawn?: number,
     duration: number,
 }
 
@@ -9,6 +10,7 @@ export type JobSpawnRequest = {
     jobId: string,
     jobIndex: number,
     targetRPS: number,
+    concurrentCallsPerSpawn: number,
     duration: number,
 }
 
@@ -26,6 +28,7 @@ export type SpawnMetric = {
     createdAt: string,
     latency: number,
     rps: number,
+    errorM1Rate: number,
 }
 
 export type WatchResponse = {
@@ -76,6 +79,7 @@ export type SpawnMetricsReport = {
     tickNumber: number,
     latency: number,
     rps: number,
+    errorM1Rate?: number,
     count: number,
     avgLatency: number,
     actualRPS: number,
