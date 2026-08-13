@@ -7,7 +7,6 @@ const INITIAL_METRICS_POLL_SECONDS = 5;
 const METRICS_POLL_INTERVAL_SECONDS = 10;
 const REQUEST_STORAGE_KEY = "request";
 const TOKEN_STORAGE_KEY = "token";
-const STARTED_AT_STORAGE_KEY = "startedAt";
 const LAST_TOTAL_COUNT_STORAGE_KEY = "lastTotalCount";
 const TICK_NUMBER_STORAGE_KEY = "tickNumber";
 const COMPLETED_STORAGE_KEY = "completed";
@@ -28,6 +27,8 @@ export type ParsedContainerMetrics = {
 export type BenchmarkIterationResult = {
     continue: boolean;
     delaySeconds?: number;
+    nextSpawnIndex?: number;
+    startRetryCounts?: Record<string, number>;
 }
 
 
@@ -37,24 +38,16 @@ export class BenchmarkContainer extends DurableObject<Env> {
         const token = crypto.randomUUID();
         const env = this.env as ContainerRuntimeEnv;
         const startedAt = Date.now();
+        const stopAt = getBenchmarkStopAt(spawnRequest);
+        const remainingDurationMinutes = Math.max(1, Math.ceil((stopAt - startedAt) / 60_000));
 
         if (!env.R2_ACCOUNT_ID || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) {
             throw new Error("Missing R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, or R2_SECRET_ACCESS_KEY for container R2 access");
         }
 
-        await this.env.DB.prepare(`UPDATE JOBS SET STATUS = 'RUNNING' WHERE JOB_ID = ? AND STATUS = 'QUEUED'`)
-            .bind(spawnRequest.jobId)
-            .run();
-
-        await this.env.DB.prepare(`INSERT INTO JOB_SPAWNS (SPAWN_ID, JOB_ID, STATUS) VALUES (?, ?, 'RUNNING')
-        ON CONFLICT (SPAWN_ID) DO UPDATE SET STATUS = 'RUNNING', CREATED_AT = EXCLUDED.CREATED_AT`)
-            .bind(spawnId, spawnRequest.jobId)
-            .run();
-
         await this.ctx.storage.put({
             [REQUEST_STORAGE_KEY]: spawnRequest,
             [TOKEN_STORAGE_KEY]: token,
-            [STARTED_AT_STORAGE_KEY]: startedAt,
             [LAST_TOTAL_COUNT_STORAGE_KEY]: 0,
             [TICK_NUMBER_STORAGE_KEY]: 0,
             [COMPLETED_STORAGE_KEY]: false,
@@ -71,7 +64,8 @@ export class BenchmarkContainer extends DurableObject<Env> {
                 env: {
                     CONCURRENCY: String(Math.floor(spawnRequest.concurrentCallsPerSpawn)),
                     TARGET_RPS: String(Math.floor(spawnRequest.targetRPS)),
-                    DURATION: String(Math.floor(spawnRequest.duration)),
+                    DURATION: String(remainingDurationMinutes),
+                    STOP_AT_EPOCH_MS: String(stopAt),
                     METRICS_PORT: String(METRICS_PORT),
                     S3_CLIENT_ID: env.R2_ACCESS_KEY_ID,
                     S3_CLIENT_SECRET: env.R2_SECRET_ACCESS_KEY,
@@ -83,6 +77,15 @@ export class BenchmarkContainer extends DurableObject<Env> {
                 },
             });
         }
+
+        await this.env.DB.prepare(`UPDATE JOBS SET STATUS = 'RUNNING' WHERE JOB_ID = ? AND STATUS = 'QUEUED'`)
+            .bind(spawnRequest.jobId)
+            .run();
+
+        await this.env.DB.prepare(`INSERT INTO JOB_SPAWNS (SPAWN_ID, JOB_ID, STATUS) VALUES (?, ?, 'RUNNING')
+        ON CONFLICT (SPAWN_ID) DO UPDATE SET STATUS = 'RUNNING', CREATED_AT = EXCLUDED.CREATED_AT`)
+            .bind(spawnId, spawnRequest.jobId)
+            .run();
     }
 
     async stopBenchmark(): Promise<void> {
@@ -114,8 +117,7 @@ export class BenchmarkContainer extends DurableObject<Env> {
             return { continue: false };
         }
 
-        const startedAt = await this.ctx.storage.get<number>(STARTED_AT_STORAGE_KEY) ?? Date.now();
-        const benchmarkDurationMs = storedSpawnRequest.duration * 60 * 1000;
+        const stopAt = getBenchmarkStopAt(storedSpawnRequest);
         const now = Date.now();
 
         if (this.ctx.container?.running) {
@@ -124,16 +126,25 @@ export class BenchmarkContainer extends DurableObject<Env> {
             } catch (error) {
                 console.warn(`Failed to fetch benchmark metrics for ${getSpawnId(storedSpawnRequest)}: ${error instanceof Error ? error.message : String(error)}`);
             }
-        } else if ((now - startedAt) < benchmarkDurationMs) {
+        } else if (now < stopAt) {
             console.warn(`Benchmark container ${getSpawnId(storedSpawnRequest)} is not running before the job duration elapsed`);
         }
 
-        if ((now - startedAt) >= benchmarkDurationMs) {
+        if (now >= stopAt) {
             await this.finishBenchmark();
             return { continue: false };
         }
 
         return { continue: true, delaySeconds: METRICS_POLL_INTERVAL_SECONDS };
+    }
+
+    async runStoredBenchmarkIteration(): Promise<BenchmarkIterationResult> {
+        const spawnRequest = await this.ctx.storage.get<JobSpawnRequest>(REQUEST_STORAGE_KEY);
+        if (!spawnRequest) {
+            return { continue: false };
+        }
+
+        return await this.runBenchmarkIteration(spawnRequest);
     }
 
     private async recordMetricsFromContainer(spawnRequest: JobSpawnRequest): Promise<void> {
@@ -211,6 +222,10 @@ export class BenchmarkContainer extends DurableObject<Env> {
 
 export function getSpawnId(spawnRequest: JobSpawnRequest): string {
     return `${spawnRequest.jobId}-${spawnRequest.jobIndex}`;
+}
+
+export function getBenchmarkStopAt(spawnRequest: JobSpawnRequest): number {
+    return spawnRequest.jobStartedAt + spawnRequest.duration * 60 * 1000;
 }
 
 export function parseContainerMetrics(value: unknown): ParsedContainerMetrics | undefined {

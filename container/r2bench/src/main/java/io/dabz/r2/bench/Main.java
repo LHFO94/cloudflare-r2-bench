@@ -30,6 +30,7 @@ public class Main {
 		int concurrency = Integer.parseInt(System.getenv("CONCURRENCY"));
 		int targetRps = Integer.parseInt(System.getenv("TARGET_RPS"));
 		int duration = Integer.parseInt(System.getenv("DURATION"));
+		long stopAtEpochMs = Long.parseLong(System.getenv().getOrDefault("STOP_AT_EPOCH_MS", "0"));
 		int metricsPort = Integer.parseInt(System.getenv().getOrDefault("METRICS_PORT", "8080"));
 		String s3ClientId = System.getenv("S3_CLIENT_ID");
 		String s3ClientSecret = System.getenv("S3_CLIENT_SECRET");
@@ -51,13 +52,20 @@ public class Main {
 			var taskLists = new LinkedList<R2BenchThread>();
 			try (ExecutorService executorService = Executors.newFixedThreadPool(concurrency)) {
 				for (int i = 0; i < concurrency; i++) {
+					if (stopAtEpochMs > 0 && System.currentTimeMillis() >= stopAtEpochMs) {
+						break;
+					}
+
 					R2BenchThread task = new R2BenchThread(s3ClientId, s3ClientSecret, s3Uri);
 					executorService.submit(task);
 					taskLists.push(task);
 					Thread.sleep(15_000); // backoff time between each tasks to avoid overloading R2 right away
 				}
 
-				Thread.sleep((long) duration * 60 * 1000);
+				long sleepDurationMs = stopAtEpochMs > 0 ? stopAtEpochMs - System.currentTimeMillis() : (long) duration * 60 * 1000;
+				if (sleepDurationMs > 0) {
+					Thread.sleep(sleepDurationMs);
+				}
 				for (var task: taskLists) {
 					task.isRunning.set(false);
 				}

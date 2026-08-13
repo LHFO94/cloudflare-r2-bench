@@ -1,6 +1,6 @@
 import { orchestrator_route } from "./orchestrator";
-import { process_benchmark_spawn_iteration } from "./spawn";
-import { JobSpawnRequest } from "./types";
+import { process_benchmark_job_iteration } from "./spawn";
+import { JobMonitorRequest } from "./types";
 export { BenchmarkContainer } from "./container";
 
 export default {
@@ -12,12 +12,16 @@ export default {
 			return Response.json({"status": "error"}, {status: 503})
 		}
 	},
-	async queue(batch: MessageBatch<JobSpawnRequest>, env: Env): Promise<void> {
+	async queue(batch: MessageBatch<JobMonitorRequest>, env: Env): Promise<void> {
 		for (const message of batch.messages) {
 			try {
-				const result = await process_benchmark_spawn_iteration(env, message.body);
+				const result = await process_benchmark_job_iteration(env, message.body);
 				if (result.continue) {
-					await env.r2bench_spawns.send(message.body, { delaySeconds: result.delaySeconds });
+					await env.r2bench_spawns.send({
+						...message.body,
+						nextSpawnIndex: result.nextSpawnIndex ?? message.body.nextSpawnIndex,
+						startRetryCounts: result.startRetryCounts ?? message.body.startRetryCounts,
+					}, { delaySeconds: result.delaySeconds });
 				}
 				message.ack();
 			} catch (error) {
@@ -26,4 +30,4 @@ export default {
 			}
 		}
 	},
-} satisfies ExportedHandler<Env, JobSpawnRequest>;
+} satisfies ExportedHandler<Env, JobMonitorRequest>;

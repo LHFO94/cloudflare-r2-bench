@@ -12,6 +12,15 @@ export type JobSpawnRequest = {
     targetRPS: number,
     concurrentCallsPerSpawn: number,
     duration: number,
+    jobStartedAt: number,
+}
+
+export type JobMonitorRequest = {
+    type: "monitor_job",
+    jobId: string,
+    spawns?: JobSpawnRequest[],
+    nextSpawnIndex?: number,
+    startRetryCounts?: Record<string, number>,
 }
 
 export type JobStartResponse = {
@@ -29,6 +38,7 @@ export type SpawnMetric = {
     latency: number,
     rps: number,
     errorM1Rate: number,
+    workerCount: number,
 }
 
 export type WatchResponse = {
@@ -38,6 +48,7 @@ export type WatchResponse = {
     created_at?: string,
     rps?: number,
     latency?: number,
+    runningContainers?: number,
     metrics: SpawnMetric[]
 }
 

@@ -1,5 +1,5 @@
-import { complete_benchmark_spawn, record_benchmark_metrics, stop_benchmark_container, verify_benchmark_container } from "./spawn";
-import { JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, SpawnCompletionReport, SpawnMetric, SpawnMetricsReport, SpawnStatusRequest, WatchRequest, WatchResponse } from "./types";
+import { complete_benchmark_spawn, record_benchmark_metrics, start_benchmark_container, stop_benchmark_container, verify_benchmark_container } from "./spawn";
+import { JobMonitorRequest, JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, SpawnCompletionReport, SpawnMetric, SpawnMetricsReport, SpawnStatusRequest, WatchRequest, WatchResponse } from "./types";
 
 const MAX_CONTAINERS_PER_JOB = 99;
 
@@ -29,6 +29,13 @@ export async function orchestrator_route(request: Request, env: Env, ctx: Execut
             case "/api/internal/spawn-complete": {
                 await complete_internal_spawn(request, env);
                 return Response.json({ status: "ok" });
+            }
+            case "/api/internal/start-containers": {
+                const data = await parse_start_containers_request(request);
+                ctx.waitUntil(start_internal_containers(data, env).catch((error) => {
+                    console.warn(`Initial container start failed for job ${data.jobId}, ${error instanceof Error ? error.message : String(error)}`);
+                }));
+                return Response.json({ status: "accepted" }, { status: 202 });
             }
             case "/start": {
                 const jobResponse = await start_job(request, env, ctx);
@@ -71,6 +78,7 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
     }
 
     const jobId = crypto.randomUUID();
+    const jobStartedAt = Date.now();
 
     const baseTargetRPSPerJob = Math.floor(targetRPS / concurrency);
     const extraRPSJobs = targetRPS % concurrency;
@@ -83,7 +91,8 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
             targetRPS: baseTargetRPSPerJob + (jobIndex < extraRPSJobs ? 1 : 0),
             jobIndex: jobIndex,
             concurrentCallsPerSpawn,
-            duration
+            duration,
+            jobStartedAt,
         };
         spawnJobs.push(spawnJob);
     }
@@ -93,7 +102,22 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
         .all();
 
     try {
-        await env.r2bench_spawns.sendBatch(spawnJobs.map((spawnJob) => ({ body: spawnJob })));
+        const response = await env.R2BENCHMARK_WORKER.fetch("https://internal.r2benchmark/api/internal/start-containers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId, spawns: spawnJobs }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Container start worker returned ${response.status}`);
+        }
+
+        await env.r2bench_spawns.send({
+            type: "monitor_job",
+            jobId,
+            spawns: spawnJobs,
+            nextSpawnIndex: 0,
+        } satisfies JobMonitorRequest, { delaySeconds: 5 });
     } catch (error) {
         await env.DB.prepare(`UPDATE JOBS SET STATUS = 'FAILED' WHERE JOB_ID = ?`)
             .bind(jobId)
@@ -113,6 +137,35 @@ async function start_job(request: Request, env: Env, ctx: ExecutionContext<unkno
         jobId: jobId
     }
 }
+
+async function parse_start_containers_request(request: Request): Promise<{ jobId: string, spawns: JobSpawnRequest[] }> {
+    const data = await request.json() as { jobId?: string, spawns?: JobSpawnRequest[] };
+    if (!data.jobId || !Array.isArray(data.spawns) || data.spawns.length === 0) {
+        throw new Error("Invalid container start request");
+    }
+
+    return { jobId: data.jobId, spawns: data.spawns };
+}
+
+async function start_internal_containers(data: { jobId: string, spawns: JobSpawnRequest[] }, env: Env): Promise<void> {
+    const job = await env.DB.prepare(`SELECT STATUS, CONCURRENCY FROM JOBS WHERE JOB_ID = ?`)
+        .bind(data.jobId)
+        .first();
+    const jobStatus = job?.['STATUS'] as string | undefined;
+    const concurrency = job?.['CONCURRENCY'] as number | undefined;
+
+    if (!job || !['QUEUED', 'RUNNING'].includes(jobStatus ?? '') || concurrency !== data.spawns.length) {
+        throw new Error("Container start request does not match a queued job");
+    }
+
+    for (const spawnRequest of data.spawns) {
+        if (spawnRequest.jobId !== data.jobId || spawnRequest.jobIndex < 0 || spawnRequest.jobIndex >= data.spawns.length) {
+            throw new Error("Invalid spawn request");
+        }
+    }
+
+    await start_benchmark_container(env, data.spawns[0]);
+}
 async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: Env, ctx: ExecutionContext<unknown>): Promise<WatchResponse> {
     const watchRequest = await request.json() as WatchRequest;
     if (!watchRequest.jobId) {
@@ -126,7 +179,11 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
     if (!job) {
         return { jobId: watchRequest.jobId, status: "unknown", message: "Job ID doesn't exist", metrics: [] };
     }
-    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(ERROR_M1_RATE) AS ERROR_M1_RATE, SUM(COUNT) AS COUNT, CREATED_AT
+    const runningContainers = await env.DB.prepare(`SELECT COUNT(*) AS COUNT FROM JOB_SPAWNS WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
+        .bind(watchRequest.jobId)
+        .first();
+
+    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(ERROR_M1_RATE) AS ERROR_M1_RATE, SUM(COUNT) AS COUNT, COUNT(*) AS WORKER_COUNT, CREATED_AT
              FROM (
                 SELECT SPAWN_ID, AVG(LATENCY) AS LATENCY, AVG(RPS) AS RPS, AVG(COALESCE(ERROR_M1_RATE, 0)) AS ERROR_M1_RATE, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
                 FROM JOB_SPAWN_METRICS
@@ -145,12 +202,14 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
         const latency = rawMetric['LATENCY'] as number;
         const rps = rawMetric['RPS'] as number;
         const errorM1Rate = rawMetric['ERROR_M1_RATE'] as number;
+        const workerCount = rawMetric['WORKER_COUNT'] as number;
         const createdAt = rawMetric['CREATED_AT'] as string;
 
         metrics.push({
             latency,
             rps,
             errorM1Rate,
+            workerCount,
             createdAt
         })
     }
@@ -161,6 +220,7 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
         created_at: job['CREATED_AT'] as string,
         latency: job['LATENCY'] as number,
         rps: job['RPS'] as number,
+        runningContainers: runningContainers?.['COUNT'] as number | undefined ?? 0,
         metrics
     }
 }

@@ -70,6 +70,12 @@
 			},
 		],
 	},
+	"services": [
+		{
+			"binding": "R2BENCHMARK_WORKER",
+			"service": "r2benchmark",
+		},
+	],
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

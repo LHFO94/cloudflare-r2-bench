@@ -37,8 +37,8 @@
                 <div id="latency" class="value">-</div>
             </div>
             <div class="card">
-                <div class="label">Samples</div>
-                <div id="samples" class="value">0</div>
+                <div class="label">Running containers</div>
+                <div id="runningContainers" class="value">0</div>
             </div>
             <div class="card">
                 <div class="label">Status</div>
@@ -59,6 +59,10 @@
                 <section class="panel">
                     <h2>Error m1 rate over time</h2>
                     <div class="chart-wrap"><canvas id="errorM1RateChart"></canvas></div>
+                </section>
+                <section class="panel">
+                    <h2>Workers over time</h2>
+                    <div class="chart-wrap"><canvas id="workersChart"></canvas></div>
                 </section>
             </div>
 
@@ -97,7 +101,7 @@
             statusText: document.getElementById("statusText"),
             rps: document.getElementById("rps"),
             latency: document.getElementById("latency"),
-            samples: document.getElementById("samples"),
+            runningContainers: document.getElementById("runningContainers"),
             sampleRows: document.getElementById("sampleRows"),
             stopButton: document.getElementById("stopButton"),
         };
@@ -106,6 +110,7 @@
         let rpsChart;
         let latencyChart;
         let errorM1RateChart;
+        let workersChart;
 
         if (!jobId) {
             el.pollState.textContent = "missing jobId";
@@ -156,6 +161,7 @@
             if (!rpsChart) rpsChart = makeChart("rpsChart", "RPS", "#2563eb");
             if (!latencyChart) latencyChart = makeChart("latencyChart", "Latency", "#b45309");
             if (!errorM1RateChart) errorM1RateChart = makeChart("errorM1RateChart", "Error m1 rate", "#dc2626");
+            if (!workersChart) workersChart = makeChart("workersChart", "Workers", "#059669");
         }
 
         function metricTime(metric, index) {
@@ -171,9 +177,12 @@
             latencyChart.data.datasets[0].data = metrics.map((metric) => Number(metric.latency || 0));
             errorM1RateChart.data.labels = labels;
             errorM1RateChart.data.datasets[0].data = metrics.map((metric) => Number(metric.errorM1Rate || 0));
+            workersChart.data.labels = labels;
+            workersChart.data.datasets[0].data = metrics.map((metric) => Number(metric.workerCount || 0));
             rpsChart.update();
             latencyChart.update();
             errorM1RateChart.update();
+            workersChart.update();
         }
 
         function updateTable(metrics) {
@@ -204,7 +213,7 @@
             el.stopButton.disabled = !canStop(data.status);
             el.rps.textContent = number(latest.rps ?? data.rps);
             el.latency.textContent = `${number(latest.latency ?? data.latency)} ms`;
-            el.samples.textContent = metrics.length.toLocaleString();
+            el.runningContainers.textContent = number(data.runningContainers, 0);
             el.lastPoll.textContent = time(new Date());
 
             updateCharts(metrics);
