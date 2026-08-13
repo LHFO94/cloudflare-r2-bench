@@ -15,108 +15,40 @@
 		"binding": "ASSETS",
 		"directory": "./assets",
 	},
+	"vars": {
+		"R2_ACCOUNT_ID": "5c02ecf03b49174c44394b56a7d39965",
+	},
 	"upload_source_maps": true,
 	"compatibility_flags": ["nodejs_compat"],
-	"r2_buckets": [
+	"containers": [
 		{
-			"bucket_name": "r2-bench-00",
-			"binding": "R2_00",
+			"class_name": "BenchmarkContainer",
+			"image": "./container/r2bench/Dockerfile",
+			"image_build_context": "./container/r2bench",
+			"instance_type": "standard-4",
+			"max_instances": 100,
+			"rollout_step_percentage": [100],
 		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "BENCHMARK_CONTAINER",
+				"class_name": "BenchmarkContainer",
+			},
+		],
+	},
+	"migrations": [
 		{
-			"bucket_name": "r2-bench-01",
-			"binding": "R2_01",
+			"tag": "v1",
+			"new_sqlite_classes": ["BenchmarkContainer"],
 		},
+	],
+	"d1_databases": [
 		{
-			"bucket_name": "r2-bench-02",
-			"binding": "R2_02",
-		},
-		{
-			"bucket_name": "r2-bench-03",
-			"binding": "R2_03",
-		},
-		{
-			"bucket_name": "r2-bench-04",
-			"binding": "R2_04",
-		},
-		{
-			"bucket_name": "r2-bench-05",
-			"binding": "R2_05",
-		},
-		{
-			"bucket_name": "r2-bench-06",
-			"binding": "R2_06",
-		},
-		{
-			"bucket_name": "r2-bench-07",
-			"binding": "R2_07",
-		},
-		{
-			"bucket_name": "r2-bench-08",
-			"binding": "R2_08",
-		},
-		{
-			"bucket_name": "r2-bench-09",
-			"binding": "R2_09",
-		},
-		{
-			"bucket_name": "r2-bench-10",
-			"binding": "R2_10",
-		},
-		{
-			"bucket_name": "r2-bench-11",
-			"binding": "R2_11",
-		},
-		{
-			"bucket_name": "r2-bench-12",
-			"binding": "R2_12",
-		},
-		{
-			"bucket_name": "r2-bench-13",
-			"binding": "R2_13",
-		},
-		{
-			"bucket_name": "r2-bench-14",
-			"binding": "R2_14",
-		},
-		{
-			"bucket_name": "r2-bench-15",
-			"binding": "R2_15",
-		},
-		{
-			"bucket_name": "r2-bench-16",
-			"binding": "R2_16",
-		},
-		{
-			"bucket_name": "r2-bench-17",
-			"binding": "R2_17",
-		},
-		{
-			"bucket_name": "r2-bench-18",
-			"binding": "R2_18",
-		},
-		{
-			"bucket_name": "r2-bench-19",
-			"binding": "R2_19",
-		},
-		{
-			"bucket_name": "r2-bench-20",
-			"binding": "R2_20",
-		},
-		{
-			"bucket_name": "r2-bench-21",
-			"binding": "R2_21",
-		},
-		{
-			"bucket_name": "r2-bench-22",
-			"binding": "R2_22",
-		},
-		{
-			"bucket_name": "r2-bench-23",
-			"binding": "R2_23",
-		},
-		{
-			"bucket_name": "r2-bench-24",
-			"binding": "R2_24",
+			"binding": "DB",
+			"database_name": "DB",
+			"database_id": "49a2bc8e-e777-4387-9e74-515eb81bf3d2",
 		},
 	],
 	"queues": {
@@ -130,16 +62,11 @@
 			{
 				"queue": "r2bench-spawns",
 				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_retries": 10,
 			},
 		],
 	},
-	"d1_databases": [
-		{
-			"binding": "DB",
-			"database_name": "DB",
-			"database_id": "49a2bc8e-e777-4387-9e74-515eb81bf3d2",
-		},
-	],
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

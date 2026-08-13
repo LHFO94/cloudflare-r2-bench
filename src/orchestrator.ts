@@ -1,4 +1,5 @@
-import { JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, NoOp, SpawnMetric, WatchRequest, WatchResponse } from "./types";
+import { complete_benchmark_spawn, record_benchmark_metrics, stop_benchmark_container, verify_benchmark_container } from "./spawn";
+import { JobSpawnRequest, JobStartRequest, JobStartResponse, JobsResponse, JobSummary, SpawnCompletionReport, SpawnMetric, SpawnMetricsReport, SpawnStatusRequest, WatchRequest, WatchResponse } from "./types";
 
 export async function orchestrator_route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -16,6 +17,17 @@ export async function orchestrator_route(request: Request, env: Env, ctx: Execut
 
     if (request.method == "POST") {
         switch (url.pathname) {
+            case "/api/internal/spawn-status": {
+                return Response.json(await get_internal_job_status(request, env));
+            }
+            case "/api/internal/spawn-metrics": {
+                await record_internal_metrics(request, env);
+                return Response.json({ status: "ok" });
+            }
+            case "/api/internal/spawn-complete": {
+                await complete_internal_spawn(request, env);
+                return Response.json({ status: "ok" });
+            }
             case "/start": {
                 const jobResponse = await start_job(request, env, ctx);
                 if (!jobResponse.jobId) {
@@ -41,40 +53,55 @@ export async function orchestrator_route(request: Request, env: Env, ctx: Execut
 
 async function start_job(request: Request, env: Env, ctx: ExecutionContext<unknown>): Promise<JobStartResponse> {
     const requestJobStart = await request.json() as JobStartRequest;
-    if (!requestJobStart.concurrency || !requestJobStart.targetRPS) {
+    const targetRPS = Math.floor(requestJobStart.targetRPS);
+    const concurrency = Math.floor(requestJobStart.concurrency);
+    const duration = Math.floor(requestJobStart.duration);
+
+    if (!Number.isFinite(targetRPS) || !Number.isFinite(concurrency) || !Number.isFinite(duration) || targetRPS <= 0 || concurrency <= 0 || duration <= 0) {
         return {"status": "error", "message": "Invalid request", jobId: undefined, job_request: requestJobStart };
+    }
+    if (targetRPS < concurrency) {
+        return {"status": "error", "message": "Target RPS must be at least the number of containers", jobId: undefined, job_request: requestJobStart };
     }
 
     const jobId = crypto.randomUUID();
-    const targetRPSPerJob = requestJobStart.targetRPS / requestJobStart.concurrency;
-    const spawnJobs: MessageSendRequest[] = [];
-    spawnJobs.push({body: { type: "noop", jobId: jobId} as NoOp, contentType: "json"});
 
-    for (let jobIndex = 0; jobIndex < requestJobStart.concurrency; jobIndex++) {
+    const baseTargetRPSPerJob = Math.floor(targetRPS / concurrency);
+    const extraRPSJobs = targetRPS % concurrency;
+    const spawnJobs: JobSpawnRequest[] = [];
+
+    for (let jobIndex = 0; jobIndex < concurrency; jobIndex++) {
         const spawnJob: JobSpawnRequest = {
             type: "spawn",
             jobId: jobId,
-            targetRPS: targetRPSPerJob,
+            targetRPS: baseTargetRPSPerJob + (jobIndex < extraRPSJobs ? 1 : 0),
             jobIndex: jobIndex,
-            duration: requestJobStart.duration
+            duration
         };
-        spawnJobs.push({
-            body: spawnJob,
-            contentType: "json"
-        } as MessageSendRequest);
+        spawnJobs.push(spawnJob);
     }
     
     await env.DB.prepare(`INSERT INTO JOBS (JOB_ID, RPS, CONCURRENCY, DURATION, STATUS) VALUES (?, ?, ?, ?, "QUEUED")`)
-        .bind(jobId, requestJobStart.targetRPS, requestJobStart.concurrency, requestJobStart.duration, )
+        .bind(jobId, targetRPS, concurrency, duration, )
         .all();
 
-    while (spawnJobs.length > 0) {
-        const subBatch = spawnJobs.splice(0, 50);
-        await env.r2bench_spawns.sendBatch(subBatch);
+    try {
+        await env.r2bench_spawns.sendBatch(spawnJobs.map((spawnJob) => ({ body: spawnJob })));
+    } catch (error) {
+        await env.DB.prepare(`UPDATE JOBS SET STATUS = 'FAILED' WHERE JOB_ID = ?`)
+            .bind(jobId)
+            .run();
+
+        return {
+            "status": "error",
+            "message": `Failed to queue benchmark containers for job ${jobId}: ${error instanceof Error ? error.message : String(error)}`,
+            "job_request": requestJobStart,
+        };
     }
+
     return {
         "status": "success",
-        "message": "Job started succesffuly",
+        "message": "Job queued succesffuly",
         "job_request": requestJobStart,
         jobId: jobId
     }
@@ -92,10 +119,14 @@ async function watch_job(request: Request<unknown, CfProperties<unknown>>, env: 
     if (!job) {
         return { jobId: watchRequest.jobId, status: "unknown", message: "Job ID doesn't exist", metrics: [] };
     }
-    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(COUNT) / 60.0 AS RPS, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
-             FROM JOB_SPAWN_METRICS
-             WHERE JOB_ID = ? AND CREATED_AT < strftime('%Y-%m-%d %H:%M:00', 'now')
-             GROUP BY strftime('%Y-%m-%d %H:%M:00', CREATED_AT)
+    const rawMetrics = await env.DB.prepare(`SELECT AVG(LATENCY) AS LATENCY, SUM(RPS) AS RPS, SUM(COUNT) AS COUNT, CREATED_AT
+             FROM (
+                SELECT SPAWN_ID, AVG(LATENCY) AS LATENCY, AVG(RPS) AS RPS, SUM(COUNT) AS COUNT, strftime('%Y-%m-%d %H:%M:00', CREATED_AT) AS CREATED_AT
+                FROM JOB_SPAWN_METRICS
+                WHERE JOB_ID = ? AND CREATED_AT < strftime('%Y-%m-%d %H:%M:00', 'now')
+                GROUP BY SPAWN_ID, strftime('%Y-%m-%d %H:%M:00', CREATED_AT)
+             )
+             GROUP BY CREATED_AT
              ORDER BY CREATED_AT DESC
              LIMIT 300`)
         .bind(watchRequest.jobId)
@@ -151,13 +182,51 @@ async function stop_job(request: Request, env: Env): Promise<{ jobId: string, st
         return { jobId: "unknown", status: "error", message: "No JobID provided" };
     }
 
-    const result = await env.DB.prepare(`UPDATE JOBS SET STATUS = 'STOPPED' WHERE JOB_ID = ? AND STATUS NOT IN ('COMPLETED', 'STOPPED', 'FAILED')`)
+    const job = await env.DB.prepare(`SELECT CONCURRENCY FROM JOBS WHERE JOB_ID = ?`)
+        .bind(stopRequest.jobId)
+        .first();
+
+    const result = await env.DB.prepare(`UPDATE JOBS SET STATUS = 'STOPPING' WHERE JOB_ID = ? AND STATUS NOT IN ('COMPLETED', 'STOPPED', 'FAILED')`)
         .bind(stopRequest.jobId)
         .run();
 
+    const concurrency = job?.['CONCURRENCY'] as number | undefined;
+    if (concurrency) {
+        await Promise.all(Array.from({ length: concurrency }, (_, jobIndex) => stop_benchmark_container(env, stopRequest.jobId, jobIndex)));
+    }
+
     return {
         jobId: stopRequest.jobId,
-        status: "STOPPED",
+        status: "STOPPING",
         message: result.meta.changes ? "Stop requested" : "Job was already finished or does not exist",
     };
+}
+
+async function get_internal_job_status(request: Request, env: Env): Promise<{ status: string }> {
+    const statusRequest = await request.json() as SpawnStatusRequest;
+    await verify_internal_request(env, statusRequest);
+
+    const job = await env.DB.prepare(`SELECT STATUS FROM JOBS WHERE JOB_ID = ?`)
+        .bind(statusRequest.jobId)
+        .first();
+
+    return { status: job?.['STATUS'] as string | undefined ?? "unknown" };
+}
+
+async function record_internal_metrics(request: Request, env: Env): Promise<void> {
+    const metricsReport = await request.json() as SpawnMetricsReport;
+    await verify_internal_request(env, metricsReport);
+    await record_benchmark_metrics(env, metricsReport);
+}
+
+async function complete_internal_spawn(request: Request, env: Env): Promise<void> {
+    const completionReport = await request.json() as SpawnCompletionReport;
+    await verify_internal_request(env, completionReport);
+    await complete_benchmark_spawn(env, completionReport);
+}
+
+async function verify_internal_request(env: Env, data: SpawnStatusRequest): Promise<void> {
+    if (!data.spawnId || !data.token || !await verify_benchmark_container(env, data.spawnId, data.token)) {
+        throw new Error("Invalid benchmark container callback token");
+    }
 }

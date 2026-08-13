@@ -12,17 +12,6 @@ export type JobSpawnRequest = {
     duration: number,
 }
 
-export type JobSpawnContinue = {
-    type: "spawn_continue",
-    request: JobSpawnRequest,
-    status: SpawnStatus,
-}
-
-export type NoOp = {
-    type: "noop",
-    jobId: string,
-}
-
 export type JobStartResponse = {
     "status": string,
     "message": string,
@@ -80,4 +69,25 @@ export type SpawnStatus = {
     lastD1Update: number,
 }
 
-export type MessageQueueType = JobSpawnRequest | JobSpawnContinue | NoOp;
+export type SpawnMetricsReport = {
+    token: string,
+    spawnId: string,
+    jobId: string,
+    tickNumber: number,
+    latency: number,
+    rps: number,
+    count: number,
+    avgLatency: number,
+    actualRPS: number,
+    totalCount: number,
+}
+
+export type SpawnStatusRequest = {
+    token: string,
+    spawnId: string,
+    jobId: string,
+}
+
+export type SpawnCompletionReport = SpawnStatusRequest & {
+    error?: string,
+}

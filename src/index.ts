@@ -1,6 +1,7 @@
 import { orchestrator_route } from "./orchestrator";
-import { continue_bench, spawn_job } from "./spawn";
-import { MessageQueueType } from "./types";
+import { process_benchmark_spawn_iteration } from "./spawn";
+import { JobSpawnRequest } from "./types";
+export { BenchmarkContainer } from "./container";
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -11,31 +12,18 @@ export default {
 			return Response.json({"status": "error"}, {status: 503})
 		}
 	},
-
-	async queue(batch, env, ctx): Promise<void> {
+	async queue(batch: MessageBatch<JobSpawnRequest>, env: Env): Promise<void> {
 		for (const message of batch.messages) {
-			console.info("consumed from our queue:", JSON.stringify(message.body));
 			try {
-				ctx.waitUntil(processMessage(message, env, ctx));
+				const result = await process_benchmark_spawn_iteration(env, message.body);
+				if (result.continue) {
+					await env.r2bench_spawns.send(message.body, { delaySeconds: result.delaySeconds });
+				}
 				message.ack();
-			} catch (err) {
-				console.error(err)
+			} catch (error) {
+				console.error(`Failed to process queue message ${message.id}, ${error instanceof Error ? error.message : String(error)}`);
+				message.retry({ delaySeconds: Math.min(message.attempts * 5, 60) });
 			}
 		}
 	},
-} satisfies ExportedHandler<Env>;
-
-
-async function processMessage(message: Message<unknown>, env: Env, ctx: ExecutionContext<unknown>) {
-	try {
-		const mqt = message.body as MessageQueueType;
-		if (mqt.type == "spawn") {
-			await spawn_job(mqt, env, ctx);
-		} else if (mqt.type == "spawn_continue") {
-			await continue_bench(mqt.status.spawnId, mqt.request, env, mqt.status);
-		}
-	} catch(err) {
-		console.error(`Error while processing messages ${err}`, err)
-	}
-}
-
+} satisfies ExportedHandler<Env, JobSpawnRequest>;
