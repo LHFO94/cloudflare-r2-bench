@@ -1,0 +1,23 @@
+cmd/agent/control.go
+  s_96f144ddbc2f30::t_6d6a389f659347 1-178
+package-lock.json
+  s_96f144ddbc2f30::t_466c19ebec5d27 2-4057
+worker-configuration.d.ts
+  s_96f144ddbc2f30::t_8ea6d790d976c6 2-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04e911caaa53df510fb1d1681891a8e700acafce",
+  "prompts": {},
+  "sessions": {
+    "s_96f144ddbc2f30": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fe1b4765cffeuNlSo3g0loEnua",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LHFO94 <dhr.l.hofman@gmail.com>"
+    }
+  }
+}
