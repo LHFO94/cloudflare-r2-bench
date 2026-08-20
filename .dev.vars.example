@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local `wrangler dev`. Never commit the real values.
+# In a deployed environment these are set as Worker secrets by Terraform.
+AGENT_TOKEN="local-dev-agent-token"
+ADMIN_TOKEN=""

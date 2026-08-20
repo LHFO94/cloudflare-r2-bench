@@ -22,23 +22,38 @@
             <h2>Start job</h2>
             <form id="startForm" class="form">
                 <div class="field">
-                    <label for="targetRPS">Target RPS</label>
-                    <input id="targetRPS" type="number" value="10000" min="0" step="100" required />
+                    <label for="targetRPS">Target RPS (aggregate)</label>
+                    <input id="targetRPS" type="number" value="80000" min="1" step="1000" required />
                 </div>
 
                 <div class="field">
-                    <label for="concurrency">Containers</label>
-                    <input id="concurrency" type="number" value="10" min="1" max="99" step="1" required />
+                    <label for="agents">Agents (load-generator VMs)</label>
+                    <input id="agents" type="number" value="8" min="1" max="512" step="1" required />
+                    <p class="muted" id="perAgentHint"></p>
                 </div>
 
                 <div class="field">
-                    <label for="concurrentCallsPerSpawn">Concurrent calls per spawn</label>
-                    <input id="concurrentCallsPerSpawn" type="number" value="100" min="1" step="1" required />
+                    <label for="workersPerAgent">Workers per agent</label>
+                    <input id="workersPerAgent" type="number" value="512" min="1" step="1" required />
+                    <p class="muted">In-flight requests per VM. Pacing is done by the rate limiter; this only has to be high enough not to be the bottleneck.</p>
                 </div>
 
                 <div class="field">
                     <label for="duration">Duration (minutes)</label>
-                    <input id="duration" type="number" value="15" min="1" max="60" step="1" required />
+                    <input id="duration" type="number" value="15" min="1" max="120" step="1" required />
+                </div>
+
+                <div class="field">
+                    <label for="startDelaySeconds">Start delay (seconds)</label>
+                    <input id="startDelaySeconds" type="number" value="30" min="0" max="600" step="5" required />
+                    <p class="muted">Time for every agent to check in and warm its connection pool so all VMs start together.</p>
+                </div>
+
+                <div class="field field-check">
+                    <label for="unthrottled">
+                        <input id="unthrottled" type="checkbox" />
+                        Unthrottled (ignore target RPS, run flat out)
+                    </label>
                 </div>
 
                 <button id="startButton" type="submit">Start</button>
@@ -47,34 +62,36 @@
         </section>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const form = document.getElementById("startForm");
         const button = document.getElementById("startButton");
         const message = document.getElementById("message");
         const targetRPS = document.getElementById("targetRPS");
-        const containers = document.getElementById("concurrency");
-        const concurrentCallsPerSpawn = document.getElementById("concurrentCallsPerSpawn");
+        const agents = document.getElementById("agents");
+        const unthrottled = document.getElementById("unthrottled");
+        const perAgentHint = document.getElementById("perAgentHint");
 
-        const rpsPerThread = 10;
-        const defaultConcurrentCallsPerSpawn = 10;
-        const maxContainers = 99;
-
-        function updateSizingFromTargetRPS() {
-            const target = Math.max(1, Math.floor(Number(targetRPS.value)) || 1);
-            const threadsNeeded = Math.ceil(target / rpsPerThread);
-            let callsPerSpawn = defaultConcurrentCallsPerSpawn;
-            let containerCount = Math.ceil(threadsNeeded / callsPerSpawn);
-
-            if (containerCount > maxContainers) {
-                containerCount = maxContainers;
-                callsPerSpawn = Math.ceil(threadsNeeded / containerCount);
+        // Sizing is an explicit operator decision now: the number of agents is
+        // however many VMs Terraform provisioned, not something the UI can
+        // derive. All the hint does is show the resulting per-VM rate.
+        function updatePerAgentHint() {
+            const total = Math.floor(Number(targetRPS.value)) || 0;
+            const count = Math.floor(Number(agents.value)) || 0;
+            if (unthrottled.checked) {
+                perAgentHint.textContent = "Unthrottled: each agent runs as fast as its workers allow.";
+            } else if (count > 0 && total >= count) {
+                perAgentHint.textContent = `~${Math.floor(total / count).toLocaleString()} RPS per agent.`;
+            } else {
+                perAgentHint.textContent = "Target RPS must be at least the number of agents.";
             }
-
-            containers.value = String(Math.max(1, containerCount));
-            concurrentCallsPerSpawn.value = String(Math.max(1, callsPerSpawn));
         }
 
-        targetRPS.addEventListener("input", updateSizingFromTargetRPS);
+        for (const el of [targetRPS, agents, unthrottled]) {
+            el.addEventListener("input", updatePerAgentHint);
+            el.addEventListener("change", updatePerAgentHint);
+        }
+        updatePerAgentHint();
 
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -83,22 +100,21 @@
             message.textContent = "Starting...";
 
             try {
-                const response = await fetch("/api/v1/start", {
+                const data = await api("/api/v1/start", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        targetRPS: Number(document.getElementById("targetRPS").value),
-                        concurrency: Number(document.getElementById("concurrency").value),
-                        concurrentCallsPerSpawn: Number(document.getElementById("concurrentCallsPerSpawn").value),
+                    body: {
+                        targetRPS: Number(targetRPS.value),
+                        agents: Number(agents.value),
+                        workersPerAgent: Number(document.getElementById("workersPerAgent").value),
                         duration: Number(document.getElementById("duration").value),
-                    }),
+                        startDelaySeconds: Number(document.getElementById("startDelaySeconds").value),
+                        unthrottled: unthrottled.checked,
+                    },
                 });
 
-                const data = await response.json();
-                if (!response.ok || !data.jobId) {
+                if (!data.jobId) {
                     throw new Error(data.message || "Missing jobId in response");
                 }
-
                 window.location.href = `/watch.html?jobId=${encodeURIComponent(data.jobId)}`;
             } catch (error) {
                 message.className = "message error";

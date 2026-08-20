@@ -1,5 +1,16 @@
 /**
- * For more details on how to configure Wrangler, refer to:
+ * Control-plane Worker for the R2 load-test harness.
+ *
+ * Load generators are external VMs (see terraform/), not Cloudflare
+ * Containers, so there is no container config, no Durable Object and no
+ * spawn queue here. The Worker only hands out work to polling agents,
+ * stores their metrics in D1 and serves the UI.
+ *
+ * For a deployed environment Terraform renders this file from
+ * terraform/modules/control-plane/wrangler.jsonc.tftpl so that the Worker
+ * name, D1 id and R2 account id match the environment being provisioned.
+ * The values below are the local `wrangler dev` defaults.
+ *
  * https://developers.cloudflare.com/workers/wrangler/configuration/
  */
 {
@@ -7,46 +18,27 @@
 	"name": "r2benchmark",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-08-06",
+	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
 		"enabled": true,
 	},
+	"upload_source_maps": true,
 	"assets": {
-		"run_worker_first": ["/api/*"],
+		"run_worker_first": ["/api/*", "/start"],
 		"binding": "ASSETS",
 		"directory": "./assets",
 	},
 	"vars": {
 		"R2_ACCOUNT_ID": "5c02ecf03b49174c44394b56a7d39965",
 	},
-	"upload_source_maps": true,
-	"compatibility_flags": ["nodejs_compat"],
-	"containers": [
-		{
-			"class_name": "BenchmarkContainer",
-			"image": "./container/r2bench/Dockerfile",
-			"image_build_context": "./container/r2bench",
-			"instance_type": "standard-1",
-			"max_instances": 100,
-			"rollout_step_percentage": [100],
-			"constraints": {
-				"regions": ["WEUR"],
-			},
-		},
-	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "BENCHMARK_CONTAINER",
-				"class_name": "BenchmarkContainer",
-			},
-		],
+	/**
+	 * Reconciliation sweep. Agents push metrics, but nothing pushes when an
+	 * agent dies, so a cron closes out expired jobs and marks stale spawns.
+	 * Runs every minute, which is the finest granularity Cron Triggers offer.
+	 */
+	"triggers": {
+		"crons": ["* * * * *"],
 	},
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": ["BenchmarkContainer"],
-		},
-	],
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -54,54 +46,25 @@
 			"database_id": "49a2bc8e-e777-4387-9e74-515eb81bf3d2",
 		},
 	],
-	"queues": {
-		"producers": [
-			{
-				"queue": "r2bench-spawns",
-				"binding": "r2bench_spawns",
-			},
-		],
-		"consumers": [
-			{
-				"queue": "r2bench-spawns",
-				"max_batch_size": 1,
-				"max_batch_timeout": 1,
-				"max_retries": 10,
-			},
-		],
-	},
-	"services": [
+	/**
+	 * Tombstone for the container supervisor Durable Object that this harness
+	 * replaced. Required only when deploying over a Worker that previously ran
+	 * the upstream container-based design; a no-op on a fresh Worker name.
+	 */
+	"migrations": [
 		{
-			"binding": "R2BENCHMARK_WORKER",
-			"service": "r2benchmark",
+			"tag": "v1",
+			"new_sqlite_classes": ["BenchmarkContainer"],
+		},
+		{
+			"tag": "v2",
+			"deleted_classes": ["BenchmarkContainer"],
 		},
 	],
 	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
+	 * Secrets (set out of band, never committed):
+	 *   AGENT_TOKEN - shared token presented by load-generator VMs
+	 *   ADMIN_TOKEN - operator token for /api/v1/* and /start
+	 * Locally, put them in .dev.vars (see .dev.vars.example).
 	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
 }

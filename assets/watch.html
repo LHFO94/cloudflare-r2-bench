@@ -33,11 +33,19 @@
                 <div id="rps" class="value">-</div>
             </div>
             <div class="card">
-                <div class="label">Latency</div>
+                <div class="label">Latency (mean)</div>
                 <div id="latency" class="value">-</div>
             </div>
             <div class="card">
-                <div class="label">Running containers</div>
+                <div class="label">Latency p95 / p99</div>
+                <div id="tail" class="value">-</div>
+            </div>
+            <div class="card">
+                <div class="label">Throughput</div>
+                <div id="throughput" class="value">-</div>
+            </div>
+            <div class="card">
+                <div class="label">Active agents</div>
                 <div id="runningContainers" class="value">0</div>
             </div>
             <div class="card">
@@ -53,7 +61,7 @@
                     <div class="chart-wrap"><canvas id="rpsChart"></canvas></div>
                 </section>
                 <section class="panel">
-                    <h2>Latency over time</h2>
+                    <h2>Latency over time (mean / p95 / p99)</h2>
                     <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
                 </section>
                 <section class="panel">
@@ -61,7 +69,7 @@
                     <div class="chart-wrap"><canvas id="errorM1RateChart"></canvas></div>
                 </section>
                 <section class="panel">
-                    <h2>Workers over time</h2>
+                    <h2>Reporting agents over time</h2>
                     <div class="chart-wrap"><canvas id="workersChart"></canvas></div>
                 </section>
             </div>
@@ -74,12 +82,14 @@
                             <tr>
                                 <th>Time</th>
                                 <th>RPS</th>
-                                <th>Error m1 rate</th>
-                                <th>Latency</th>
+                                <th>Errors/s</th>
+                                <th>Mean</th>
+                                <th>p95</th>
+                                <th>p99</th>
                             </tr>
                         </thead>
                         <tbody id="sampleRows">
-                            <tr><td colspan="4">No data yet</td></tr>
+                            <tr><td colspan="6">No data yet</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -87,10 +97,14 @@
         </section>
     </main>
 
+    <script src="/app.js"></script>
     <script>
+        // app.js strips ?token= from the URL on load, so read the remaining
+        // params afterwards.
         const params = new URL(window.location.href).searchParams;
         const jobId = params.get("jobId");
-        const pollMs = 5000;
+        // Agents report every 10s; polling faster only costs D1 reads.
+        const pollMs = 10000;
 
         const el = {
             jobId: document.getElementById("jobId"),
@@ -101,6 +115,8 @@
             statusText: document.getElementById("statusText"),
             rps: document.getElementById("rps"),
             latency: document.getElementById("latency"),
+            tail: document.getElementById("tail"),
+            throughput: document.getElementById("throughput"),
             runningContainers: document.getElementById("runningContainers"),
             sampleRows: document.getElementById("sampleRows"),
             stopButton: document.getElementById("stopButton"),
@@ -136,6 +152,12 @@
             return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
         }
 
+        function gbps(bytesPerMinute) {
+            const n = Number(bytesPerMinute);
+            if (!Number.isFinite(n) || n <= 0) return "-";
+            return `${(n * 8 / 60 / 1e9).toLocaleString(undefined, { maximumFractionDigits: 2 })} Gbps`;
+        }
+
         function statusClass(status) {
             return `pill status-${String(status || "unknown").toLowerCase()}`;
         }
@@ -144,24 +166,36 @@
             return !["completed", "stopped", "stopping", "failed"].includes(String(status || "").toLowerCase());
         }
 
-        function makeChart(id, label, color) {
+        function makeChart(id, series) {
             return new Chart(document.getElementById(id), {
                 type: "line",
-                data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 2, pointRadius: 1, tension: 0.2 }] },
+                data: {
+                    labels: [],
+                    datasets: series.map(({ label, color }) => ({
+                        label, data: [], borderColor: color, borderWidth: 2, pointRadius: 1, tension: 0.2,
+                    })),
+                },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     animation: false,
+                    plugins: { legend: { display: series.length > 1 } },
                     scales: { y: { beginAtZero: true } },
                 },
             });
         }
 
         function ensureCharts() {
-            if (!rpsChart) rpsChart = makeChart("rpsChart", "RPS", "#2563eb");
-            if (!latencyChart) latencyChart = makeChart("latencyChart", "Latency", "#b45309");
-            if (!errorM1RateChart) errorM1RateChart = makeChart("errorM1RateChart", "Error m1 rate", "#dc2626");
-            if (!workersChart) workersChart = makeChart("workersChart", "Workers", "#059669");
+            if (!rpsChart) rpsChart = makeChart("rpsChart", [{ label: "RPS", color: "#2563eb" }]);
+            // Mean, p95 and p99 share an axis: the gap between them is the
+            // point of the chart, and separate panels would hide it.
+            if (!latencyChart) latencyChart = makeChart("latencyChart", [
+                { label: "mean", color: "#b45309" },
+                { label: "p95", color: "#7c3aed" },
+                { label: "p99", color: "#db2777" },
+            ]);
+            if (!errorM1RateChart) errorM1RateChart = makeChart("errorM1RateChart", [{ label: "Errors/s", color: "#dc2626" }]);
+            if (!workersChart) workersChart = makeChart("workersChart", [{ label: "Agents", color: "#059669" }]);
         }
 
         function metricTime(metric, index) {
@@ -175,6 +209,8 @@
             rpsChart.data.datasets[0].data = metrics.map((metric) => Number(metric.rps || 0));
             latencyChart.data.labels = labels;
             latencyChart.data.datasets[0].data = metrics.map((metric) => Number(metric.latency || 0));
+            latencyChart.data.datasets[1].data = metrics.map((metric) => Number(metric.p95 || 0));
+            latencyChart.data.datasets[2].data = metrics.map((metric) => Number(metric.p99 || 0));
             errorM1RateChart.data.labels = labels;
             errorM1RateChart.data.datasets[0].data = metrics.map((metric) => Number(metric.errorM1Rate || 0));
             workersChart.data.labels = labels;
@@ -188,7 +224,7 @@
         function updateTable(metrics) {
             const rows = metrics.slice().reverse().slice(0, 20);
             if (rows.length === 0) {
-                el.sampleRows.innerHTML = `<tr><td colspan="4">No data yet</td></tr>`;
+                el.sampleRows.innerHTML = `<tr><td colspan="6">No data yet</td></tr>`;
                 return;
             }
 
@@ -198,6 +234,8 @@
                     <td>${number(metric.rps)}</td>
                     <td>${number(metric.errorM1Rate)}</td>
                     <td>${number(metric.latency)} ms</td>
+                    <td>${number(metric.p95)} ms</td>
+                    <td>${number(metric.p99)} ms</td>
                 </tr>
             `).join("");
         }
@@ -213,6 +251,9 @@
             el.stopButton.disabled = !canStop(data.status);
             el.rps.textContent = number(latest.rps ?? data.rps);
             el.latency.textContent = `${number(latest.latency ?? data.latency)} ms`;
+            el.tail.textContent = `${number(latest.p95)} / ${number(latest.p99)} ms`;
+            // BYTES is a per-minute bucket sum, hence /60 to get bits/second.
+            el.throughput.textContent = gbps(latest.bytes);
             el.runningContainers.textContent = number(data.runningContainers, 0);
             el.lastPoll.textContent = time(new Date());
 
@@ -226,13 +267,7 @@
             el.pollState.textContent = "polling";
 
             try {
-                const response = await fetch("/api/v1/watch", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ jobId }),
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                const data = await api("/api/v1/watch", { method: "POST", body: { jobId } });
                 render(data);
                 el.pollState.textContent = "ok";
             } catch (error) {
@@ -247,13 +282,7 @@
             el.pollState.textContent = "stopping";
 
             try {
-                const response = await fetch("/api/v1/stop", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ jobId }),
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                const data = await api("/api/v1/stop", { method: "POST", body: { jobId } });
                 el.status.textContent = data.status || "STOPPING";
                 el.status.className = statusClass(data.status);
                 el.statusText.textContent = data.status || "STOPPING";

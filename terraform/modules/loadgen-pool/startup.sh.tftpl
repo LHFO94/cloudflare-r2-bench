@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# Load-generator boot script. Rendered by Terraform.
+#
+# Everything here talks to Google APIs over plain HTTPS with a token from the
+# metadata server. The stock Debian GCE image ships neither gcloud nor gsutil,
+# and installing the Cloud SDK just to fetch two objects would put an apt
+# transaction and a ~100 MB download on the critical path of every boot.
+#
+# Fails loudly: a VM that looks healthy while contributing nothing to the run is
+# worse than one that is obviously broken, because its share of the target RPS
+# silently goes unserved.
+set -Eeuo pipefail
+
+log() { echo "[r2agent-boot] $*" | tee /dev/console; }
+trap 'log "FAILED at line $LINENO"' ERR
+
+log "starting bootstrap"
+
+METADATA="http://metadata.google.internal/computeMetadata/v1"
+MD_HEADER="Metadata-Flavor: Google"
+
+# Google APIs occasionally return a transient 5xx during instance creation, and
+# a MIG replacing eight VMs at once makes that likelier. Retry rather than leave
+# a hole in the fleet.
+CURL=(curl --silent --show-error --fail --retry 5 --retry-connrefused --retry-delay 2 --max-time 120)
+
+json_field() { python3 -c 'import json,sys; print(json.load(sys.stdin)["'"$1"'"])'; }
+
+ACCESS_TOKEN="$("$${CURL[@]}" -H "$MD_HEADER" "$METADATA/instance/service-accounts/default/token" | json_field access_token)"
+AUTH_HEADER="Authorization: Bearer $ACCESS_TOKEN"
+
+# ---------------------------------------------------------------------------
+# Kernel tuning
+# ---------------------------------------------------------------------------
+# Each agent holds hundreds of concurrent TLS connections and cycles ephemeral
+# ports fast. The stock Debian limits are sized for a general-purpose server;
+# left alone they surface as connect() failures that look exactly like R2
+# throttling and would be attributed to the system under test.
+cat >/etc/sysctl.d/99-r2agent.conf <<'SYSCTL'
+net.ipv4.ip_local_port_range = 10000 65535
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.core.netdev_max_backlog = 250000
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+fs.file-max = 2097152
+SYSCTL
+sysctl --system >/dev/null
+log "sysctl applied"
+
+# ---------------------------------------------------------------------------
+# Agent binary
+# ---------------------------------------------------------------------------
+install -d -m 0755 /opt/r2agent
+"$${CURL[@]}" -H "$AUTH_HEADER" -o /opt/r2agent/agent \
+  "https://storage.googleapis.com/storage/v1/b/${artifact_bucket}/o/${artifact_object}?alt=media"
+chmod 0755 /opt/r2agent/agent
+log "agent binary installed (${artifact_object})"
+
+# ---------------------------------------------------------------------------
+# R2 credentials
+# ---------------------------------------------------------------------------
+# Fetched at boot with the VM's own service account rather than passed through
+# instance metadata, so the credential is not readable by anyone who can
+# describe the instance and never enters Terraform state.
+SECRET_B64="$("$${CURL[@]}" -H "$AUTH_HEADER" \
+  "https://secretmanager.googleapis.com/v1/projects/${project_id}/secrets/${r2_credentials_secret_id}/versions/latest:access" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["payload"]["data"])')"
+
+CREDS_JSON="$(printf '%s' "$SECRET_B64" | base64 -d)"
+R2_ACCESS_KEY_ID="$(printf '%s' "$CREDS_JSON" | json_field access_key_id)"
+R2_SECRET_ACCESS_KEY="$(printf '%s' "$CREDS_JSON" | json_field secret_access_key)"
+unset CREDS_JSON SECRET_B64
+
+if [[ -z "$R2_ACCESS_KEY_ID" || -z "$R2_SECRET_ACCESS_KEY" ]]; then
+  log "secret ${r2_credentials_secret_id} is missing access_key_id or secret_access_key"
+  exit 1
+fi
+log "R2 credentials loaded"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# The agent id must be stable across reboots and unique across the fleet: the
+# control plane derives the spawn id from it, so a restarted VM reclaims its own
+# slot instead of consuming a second one and starving a peer.
+AGENT_ID="$("$${CURL[@]}" -H "$MD_HEADER" "$METADATA/instance/name")"
+
+install -d -m 0700 /etc/r2agent
+umask 077
+cat >/etc/r2agent/agent.env <<ENVFILE
+R2_ENDPOINT=${r2_endpoint}
+R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY
+R2_BUCKET_PREFIX=${bucket_prefix}
+R2_BUCKET_COUNT=${bucket_count}
+R2_KEYSPACE=${keyspace}
+CONTROL_PLANE_URL=${control_plane_url}
+AGENT_TOKEN=${agent_token}
+AGENT_ID=$AGENT_ID
+AGENT_REGION=${region}
+POLL_INTERVAL_SECONDS=${poll_interval_seconds}
+METRICS_INTERVAL_SECONDS=${metrics_interval_seconds}
+MAX_WORKERS=${max_workers}
+ENVFILE
+chmod 0600 /etc/r2agent/agent.env
+umask 022
+log "agent config written for $AGENT_ID"
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+# Restart=always so a crashed agent rejoins its slot mid-run rather than leaving
+# a hole. LimitNOFILE must clear MAX_WORKERS with headroom for TIME_WAIT churn.
+cat >/etc/systemd/system/r2agent.service <<'UNIT'
+[Unit]
+Description=R2 benchmark load generator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/r2agent/agent.env
+ExecStart=/opt/r2agent/agent
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+LimitNPROC=1048576
+# The agent is the reason this VM exists; do not let the OOM killer prefer it.
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now r2agent.service
+log "r2agent service started"

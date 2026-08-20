@@ -1,33 +1,30 @@
 import { orchestrator_route } from "./orchestrator";
-import { process_benchmark_job_iteration } from "./spawn";
-import { JobMonitorRequest } from "./types";
-export { BenchmarkContainer } from "./container";
+import { reap_jobs } from "./spawn";
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		try {
 			return await orchestrator_route(request, env, ctx);
-		} catch(err) {
-			console.error(`Unexpected error while processing request, ${err}`)
-			return Response.json({"status": "error"}, {status: 503})
+		} catch (err) {
+			console.error(`Unexpected error while processing request, ${err}`);
+			return Response.json({ status: "error" }, { status: 503 });
 		}
 	},
-	async queue(batch: MessageBatch<JobMonitorRequest>, env: Env): Promise<void> {
-		for (const message of batch.messages) {
-			try {
-				const result = await process_benchmark_job_iteration(env, message.body);
-				if (result.continue) {
-					await env.r2bench_spawns.send({
-						...message.body,
-						nextSpawnIndex: result.nextSpawnIndex ?? message.body.nextSpawnIndex,
-						startRetryCounts: result.startRetryCounts ?? message.body.startRetryCounts,
-					}, { delaySeconds: result.delaySeconds });
-				}
-				message.ack();
-			} catch (error) {
-				console.error(`Failed to process queue message ${message.id}, ${error instanceof Error ? error.message : String(error)}`);
-				message.retry({ delaySeconds: Math.min(message.attempts * 5, 60) });
+
+	/**
+	 * Reconciliation sweep.
+	 *
+	 * Errors are logged rather than thrown: a failing cron invocation is not
+	 * retried, and the next minute's tick performs the same idempotent work.
+	 */
+	async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+		try {
+			const result = await reap_jobs(env);
+			if (result.finalised || result.staleSpawns || result.abandoned) {
+				console.log(`Reaper: finalised=${result.finalised} staleSpawns=${result.staleSpawns} abandoned=${result.abandoned}`);
 			}
+		} catch (err) {
+			console.error(`Reaper failed, ${err}`);
 		}
 	},
-} satisfies ExportedHandler<Env, JobMonitorRequest>;
+} satisfies ExportedHandler<Env>;

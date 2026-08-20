@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and fill in. No secrets belong in this file:
+# the Cloudflare API token comes from $CLOUDFLARE_API_TOKEN, and the R2
+# credentials live in Secret Manager.
+
+# Short, unique, and never reused for a different R2 location. R2 pins a
+# bucket name to its location permanently, so a reused id silently keeps the
+# old region.
+deployment_id = "smoke1"
+
+cloudflare_account_id = "5c02ecf03b49174c44394b56a7d39965"
+
+# Workers & Pages > Overview in the dashboard, without ".workers.dev".
+workers_dev_subdomain = "your-subdomain"
+
+gcp_project_id = "globalse-198312"
+
+# us-west2 pairs with R2 "wnam" and has the verified vCPU and external IP
+# quota; the smoke run needs one n2-standard-2. Changing this without changing r2_location in
+# main.tf will fail the region-pairing precondition.
+gcp_region = "us-west2"
+gcp_zones  = ["us-west2-a"]
+
+# Created out of band; see "One-time setup" in the README.
+r2_credentials_secret_id = "r2bench-credentials"

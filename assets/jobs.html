@@ -31,7 +31,7 @@
                             <th>Job ID</th>
                             <th>Status</th>
                             <th>RPS</th>
-                            <th>Containers</th>
+                            <th>Agents</th>
                             <th>Duration</th>
                             <th>Created</th>
                             <th>Updated</th>
@@ -46,6 +46,7 @@
         </section>
     </main>
 
+    <script src="/app.js"></script>
     <script>
         const rows = document.getElementById("jobRows");
         const message = document.getElementById("message");
@@ -92,9 +93,7 @@
             message.textContent = "Loading...";
 
             try {
-                const response = await fetch("/api/v1/jobs");
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+                const data = await api("/api/v1/jobs");
                 renderJobs(Array.isArray(data.jobs) ? data.jobs : []);
                 message.className = "message ok";
                 message.textContent = `Loaded ${Array.isArray(data.jobs) ? data.jobs.length : 0} jobs`;

@@ -1,212 +1,155 @@
-import { JobMonitorRequest, JobSpawnRequest, SpawnCompletionReport, SpawnMetricsReport } from "./types";
-import type { BenchmarkIterationResult } from "./container";
+import { SpawnCompletionReport, SpawnMetricsReport } from "./types";
 
+/**
+ * A spawn that has not reported in this long is presumed dead (VM preempted,
+ * agent crashed, network partition). Agents report every 10s by default, so
+ * this allows six missed reports before intervening.
+ */
+const SPAWN_STALE_AFTER_MS = 90_000;
 
-export async function start_benchmark_container(env: Env, spawnRequest: JobSpawnRequest): Promise<void> {
-    const stub = env.BENCHMARK_CONTAINER.getByName(getSpawnId(spawnRequest));
-    await stub.startBenchmark(spawnRequest);
-}
+/**
+ * Grace period after a job's stop time before the reaper finalises it, giving
+ * agents a chance to deliver their final metrics flush and completion report.
+ */
+const JOB_FINALISE_GRACE_MS = 30_000;
 
-const CONTAINER_START_DELAY_SECONDS = 5;
-const MAX_CONTAINER_START_RETRIES = 5;
+/**
+ * How long a job may sit QUEUED with no agents before being failed. If the
+ * VMs are not running or the token is wrong, this is what surfaces it rather
+ * than leaving the job pending forever.
+ */
+const QUEUED_WITHOUT_AGENTS_TIMEOUT_MS = 300_000;
 
-export async function process_benchmark_job_iteration(env: Env, request: JobMonitorRequest): Promise<BenchmarkIterationResult> {
-    const jobId = request.jobId;
-    const job = await env.DB.prepare(`SELECT STATUS FROM JOBS WHERE JOB_ID = ?`)
-        .bind(jobId)
-        .first();
-    const jobStatus = job?.['STATUS'] as string | undefined;
-
-    if (!job) {
-        return { continue: false };
-    }
-
-    let allSpawns = await get_job_spawns(env, jobId);
-    let rawSpawns = get_running_spawns(allSpawns);
-
-    if (['COMPLETED', 'STOPPED', 'FAILED'].includes(jobStatus ?? '')) {
-        await Promise.all(rawSpawns.results.map(async (spawn) => {
-            const spawnId = spawn['SPAWN_ID'] as string;
-            const stub = env.BENCHMARK_CONTAINER.getByName(spawnId);
-            await stub.runStoredBenchmarkIteration();
-        }));
-
-        return { continue: false };
-    }
-
-    const spawns = request.spawns ?? [];
-    const startRetryCounts = { ...(request.startRetryCounts ?? {}) };
-    let nextSpawnIndex = request.nextSpawnIndex ?? spawns.length;
-    const existingSpawnIds = new Set(allSpawns.results.map((spawn) => spawn['SPAWN_ID'] as string));
-
-    if (spawns[0] && Date.now() >= getJobStopAt(spawns[0])) {
-        await Promise.all(rawSpawns.results.map(async (spawn) => {
-            const spawnId = spawn['SPAWN_ID'] as string;
-            const stub = env.BENCHMARK_CONTAINER.getByName(spawnId);
-            await stub.runStoredBenchmarkIteration();
-        }));
-
-        if (rawSpawns.results.length === 0) {
-            await env.DB.prepare(`UPDATE JOBS SET STATUS = 'COMPLETED' WHERE JOB_ID = ? AND STATUS IN ('QUEUED', 'RUNNING')`)
-                .bind(jobId)
-                .run();
-        }
-
-        return { continue: false };
-    }
-
-    while (nextSpawnIndex < spawns.length && existingSpawnIds.has(getSpawnId(spawns[nextSpawnIndex]))) {
-        nextSpawnIndex += 1;
-    }
-
-    if (!['STOPPING', 'STOPPED'].includes(jobStatus ?? '') && nextSpawnIndex < spawns.length) {
-        const spawnRequest = spawns[nextSpawnIndex];
-        if (spawnRequest.jobId !== jobId || spawnRequest.jobIndex !== nextSpawnIndex) {
-            throw new Error("Invalid job monitor spawn request");
-        }
-
-        const spawnId = getSpawnId(spawnRequest);
-        try {
-            await start_benchmark_container(env, spawnRequest);
-            delete startRetryCounts[spawnId];
-            nextSpawnIndex += 1;
-            allSpawns = await get_job_spawns(env, jobId);
-            rawSpawns = get_running_spawns(allSpawns);
-        } catch (error) {
-            const retryCount = (startRetryCounts[spawnId] ?? 0) + 1;
-            startRetryCounts[spawnId] = retryCount;
-            console.warn(`Failed to start container ${spawnId} on attempt ${retryCount}/${MAX_CONTAINER_START_RETRIES}: ${error instanceof Error ? error.message : String(error)}`);
-
-            if (retryCount >= MAX_CONTAINER_START_RETRIES) {
-                await fail_job_and_stop_spawns(env, jobId, rawSpawns);
-                return { continue: false };
-            }
-
-            return {
-                continue: true,
-                delaySeconds: CONTAINER_START_DELAY_SECONDS,
-                nextSpawnIndex,
-                startRetryCounts,
-            };
-        }
-    }
-
-    if (rawSpawns.results.length === 0) {
-        if (nextSpawnIndex < spawns.length || ['QUEUED', 'RUNNING', 'STOPPING'].includes(jobStatus ?? '')) {
-            return { continue: true, delaySeconds: CONTAINER_START_DELAY_SECONDS, nextSpawnIndex, startRetryCounts };
-        }
-
-        return { continue: false };
-    }
-
-    const results = await Promise.all(rawSpawns.results.map(async (spawn) => {
-        const spawnId = spawn['SPAWN_ID'] as string;
-        const stub = env.BENCHMARK_CONTAINER.getByName(spawnId);
-        return await stub.runStoredBenchmarkIteration();
-    }));
-
-    const activeResults = results.filter((result) => result.continue);
-    if (activeResults.length === 0 && nextSpawnIndex >= spawns.length) {
-        return { continue: false };
-    }
-
-    return {
-        continue: true,
-        delaySeconds: nextSpawnIndex < spawns.length ? CONTAINER_START_DELAY_SECONDS : Math.min(...activeResults.map((result) => result.delaySeconds ?? 10)),
-        nextSpawnIndex,
-        startRetryCounts,
-    };
-}
-
-async function get_job_spawns(env: Env, jobId: string): Promise<D1Result<Record<string, unknown>>> {
-    return await env.DB.prepare(`SELECT SPAWN_ID, STATUS FROM JOB_SPAWNS WHERE JOB_ID = ? ORDER BY SPAWN_ID`)
-        .bind(jobId)
-        .all();
-}
-
-function get_running_spawns(spawns: D1Result<Record<string, unknown>>): D1Result<Record<string, unknown>> {
-    return {
-        ...spawns,
-        results: spawns.results.filter((spawn) => spawn['STATUS'] === 'RUNNING'),
-    };
-}
-
-async function fail_job_and_stop_spawns(env: Env, jobId: string, rawSpawns: D1Result<Record<string, unknown>>): Promise<void> {
-    await env.DB.prepare(`UPDATE JOBS SET STATUS = 'FAILED' WHERE JOB_ID = ?`)
-        .bind(jobId)
-        .run();
-
-    await Promise.all(rawSpawns.results.map(async (spawn) => {
-        const spawnId = spawn['SPAWN_ID'] as string;
-        const stub = env.BENCHMARK_CONTAINER.getByName(spawnId);
-        await stub.runStoredBenchmarkIteration();
-    }));
-}
-
-export async function stop_benchmark_container(env: Env, jobId: string, jobIndex: number): Promise<void> {
-    const stub = env.BENCHMARK_CONTAINER.getByName(`${jobId}-${jobIndex}`);
-    await stub.stopBenchmark();
-}
-
-export async function verify_benchmark_container(env: Env, spawnId: string, token: string): Promise<boolean> {
-    const stub = env.BENCHMARK_CONTAINER.getByName(spawnId);
-    return await stub.validateToken(token);
-}
-
+/**
+ * Persist an interval metrics report from an agent.
+ *
+ * Both statements are sent as a single D1 batch: at 8 agents on a 10s cadence
+ * this is only ~1.6 writes/sec, but batching keeps the round trips down and
+ * makes the pair atomic.
+ */
 export async function record_benchmark_metrics(env: Env, report: SpawnMetricsReport): Promise<void> {
-    const metricId = `${report.spawnId}-${Date.now()}`;
+    // crypto.randomUUID rather than `${spawnId}-${Date.now()}`: the original
+    // scheme collides if a spawn reports twice within the same millisecond.
+    const metricId = crypto.randomUUID();
 
-    await env.DB.prepare(`INSERT INTO JOB_SPAWN_METRICS (METRIC_ID, SPAWN_ID, JOB_ID, TICK_NUMBER, LATENCY, RPS, ERROR_M1_RATE, COUNT) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(metricId, report.spawnId, report.jobId, report.tickNumber, report.latency, report.rps, report.errorM1Rate ?? 0, report.count)
-        .run();
-
-    await env.DB.prepare(`UPDATE JOB_SPAWNS SET AVG_LATENCY = ?, AVG_RPS = ?, COUNT = ? WHERE SPAWN_ID = ?`)
-        .bind(report.avgLatency, report.actualRPS, report.totalCount, report.spawnId)
-        .run();
+    await env.DB.batch([
+        env.DB.prepare(
+            `INSERT INTO JOB_SPAWN_METRICS
+               (METRIC_ID, SPAWN_ID, JOB_ID, TICK_NUMBER, LATENCY, RPS, ERROR_M1_RATE, COUNT,
+                P50, P95, P99, BYTES, STATUS_4XX, STATUS_5XX)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(
+                metricId, report.spawnId, report.jobId, report.tickNumber,
+                report.latency, report.rps, report.errorM1Rate ?? 0, report.count,
+                report.p50 ?? 0, report.p95 ?? 0, report.p99 ?? 0,
+                report.bytes ?? 0, report.status4xx ?? 0, report.status5xx ?? 0),
+        env.DB.prepare(
+            `UPDATE JOB_SPAWNS
+             SET AVG_LATENCY = ?, AVG_RPS = ?, COUNT = ?, LAST_SEEN = ?, UPDATED_AT = current_timestamp
+             WHERE SPAWN_ID = ?`)
+            .bind(report.avgLatency, report.actualRPS, report.totalCount, Date.now(), report.spawnId),
+    ]);
 }
 
+/** Record an agent finishing, and close out the job once the last one lands. */
 export async function complete_benchmark_spawn(env: Env, report: SpawnCompletionReport): Promise<void> {
     if (report.error) {
-        await env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = 'FAILED' WHERE SPAWN_ID = ?`)
-            .bind(report.spawnId)
-            .run();
-
-        await env.DB.prepare(`UPDATE JOBS SET STATUS = 'FAILED' WHERE JOB_ID = ?`)
-            .bind(report.jobId)
-            .run();
+        await env.DB.batch([
+            env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = 'FAILED', UPDATED_AT = current_timestamp WHERE SPAWN_ID = ?`)
+                .bind(report.spawnId),
+            env.DB.prepare(`UPDATE JOBS SET STATUS = 'FAILED', UPDATED_AT = current_timestamp WHERE JOB_ID = ? AND STATUS IN ('QUEUED', 'RUNNING')`)
+                .bind(report.jobId),
+        ]);
         return;
     }
 
     const job = await env.DB.prepare(`SELECT STATUS FROM JOBS WHERE JOB_ID = ?`)
         .bind(report.jobId)
         .first();
-    const jobStatus = job?.['STATUS'] as string | undefined;
-    const finalSpawnStatus = ['STOPPING', 'STOPPED'].includes(jobStatus ?? '') ? 'STOPPED' : 'COMPLETED';
+    const jobStatus = job?.["STATUS"] as string | undefined;
+    const stopping = ["STOPPING", "STOPPED"].includes(jobStatus ?? "");
 
-    await env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = ? WHERE SPAWN_ID = ?`)
-        .bind(finalSpawnStatus, report.spawnId)
+    await env.DB.prepare(`UPDATE JOB_SPAWNS SET STATUS = ?, UPDATED_AT = current_timestamp WHERE SPAWN_ID = ?`)
+        .bind(stopping ? "STOPPED" : "COMPLETED", report.spawnId)
         .run();
 
-    const activeSpawns = await env.DB.prepare(`
-           SELECT COUNT(*) AS COUNT
-           FROM JOB_SPAWNS
-           WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
+    const active = await env.DB.prepare(
+        `SELECT COUNT(*) AS COUNT FROM JOB_SPAWNS WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
         .bind(report.jobId)
         .first();
 
-    if ((activeSpawns?.['COUNT'] as number | undefined) !== 0) {
+    if ((active?.["COUNT"] as number | undefined) !== 0) {
         return;
     }
 
-    await env.DB.prepare(`UPDATE JOBS SET STATUS = ? WHERE JOB_ID = ?`)
-        .bind(['STOPPING', 'STOPPED'].includes(jobStatus ?? '') ? 'STOPPED' : 'COMPLETED', report.jobId)
+    await env.DB.prepare(
+        `UPDATE JOBS SET STATUS = ?, UPDATED_AT = current_timestamp
+         WHERE JOB_ID = ? AND STATUS IN ('QUEUED', 'RUNNING', 'STOPPING')`)
+        .bind(stopping ? "STOPPED" : "COMPLETED", report.jobId)
         .run();
 }
 
-function getSpawnId(spawnRequest: JobSpawnRequest): string {
-    return `${spawnRequest.jobId}-${spawnRequest.jobIndex}`;
-}
+/**
+ * Scheduled reconciliation, invoked by the cron trigger.
+ *
+ * The original harness drove each job from a single self-perpetuating queue
+ * message; if that message was ever lost the job hung in RUNNING forever with
+ * nothing to advance it. A cron sweep is stateless and idempotent, so a missed
+ * tick simply resolves on the next minute.
+ */
+export async function reap_jobs(env: Env): Promise<{ finalised: number, staleSpawns: number, abandoned: number }> {
+    const now = Date.now();
+    let finalised = 0;
+    let staleSpawns = 0;
+    let abandoned = 0;
 
-function getJobStopAt(spawnRequest: JobSpawnRequest): number {
-    return spawnRequest.jobStartedAt + spawnRequest.duration * 60 * 1000;
+    // 1. Mark spawns that have stopped reporting. Without this a dead VM keeps
+    //    a job RUNNING indefinitely because its spawn never completes.
+    const stale = await env.DB.prepare(
+        `UPDATE JOB_SPAWNS SET STATUS = 'FAILED', UPDATED_AT = current_timestamp
+         WHERE STATUS = 'RUNNING' AND LAST_SEEN IS NOT NULL AND LAST_SEEN < ?`)
+        .bind(now - SPAWN_STALE_AFTER_MS)
+        .run();
+    staleSpawns = stale.meta.changes ?? 0;
+
+    // 2. Finalise jobs whose window has closed.
+    const expired = await env.DB.prepare(
+        `SELECT JOB_ID FROM JOBS WHERE STATUS IN ('QUEUED', 'RUNNING', 'STOPPING') AND STOP_AT < ?`)
+        .bind(now - JOB_FINALISE_GRACE_MS)
+        .all();
+
+    for (const row of expired.results) {
+        const jobId = row["JOB_ID"] as string;
+        await env.DB.batch([
+            env.DB.prepare(
+                `UPDATE JOB_SPAWNS SET STATUS = 'COMPLETED', UPDATED_AT = current_timestamp
+                 WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
+                .bind(jobId),
+            env.DB.prepare(
+                `UPDATE JOBS SET STATUS = 'COMPLETED', UPDATED_AT = current_timestamp
+                 WHERE JOB_ID = ? AND STATUS IN ('QUEUED', 'RUNNING', 'STOPPING')`)
+                .bind(jobId),
+        ]);
+        finalised++;
+    }
+
+    // 3. Fail jobs that never attracted any agents, so a misconfigured fleet
+    //    is visible in the UI instead of hanging.
+    const orphaned = await env.DB.prepare(
+        `UPDATE JOBS SET STATUS = 'FAILED', UPDATED_AT = current_timestamp
+         WHERE STATUS = 'QUEUED'
+           AND START_AT < ?
+           AND (SELECT COUNT(*) FROM JOB_SPAWNS WHERE JOB_SPAWNS.JOB_ID = JOBS.JOB_ID) = 0`)
+        .bind(now - QUEUED_WITHOUT_AGENTS_TIMEOUT_MS)
+        .run();
+    abandoned = orphaned.meta.changes ?? 0;
+
+    // 4. Close out stopping jobs once every agent has gone quiet.
+    await env.DB.prepare(
+        `UPDATE JOBS SET STATUS = 'STOPPED', UPDATED_AT = current_timestamp
+         WHERE STATUS = 'STOPPING'
+           AND (SELECT COUNT(*) FROM JOB_SPAWNS WHERE JOB_SPAWNS.JOB_ID = JOBS.JOB_ID AND STATUS = 'RUNNING') = 0`)
+        .run();
+
+    return { finalised, staleSpawns, abandoned };
 }
