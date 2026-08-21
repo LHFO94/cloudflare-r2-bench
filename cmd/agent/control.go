@@ -27,6 +27,15 @@ func NewControlClient(cfg *Config) *ControlClient {
 		region:  cfg.AgentRegion,
 		http: &http.Client{
 			Timeout: 15 * time.Second,
+			// Never follow redirects. The control plane only ever answers with
+			// JSON, so a 3xx means something in front of it is intercepting -
+			// an identity proxy such as Cloudflare Access, or a captive portal.
+			// Following the redirect fetches a login page and fails later with
+			// "invalid character '<'", which hides the real cause; surfacing
+			// the 302 and its Location names the problem outright.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				MaxIdleConnsPerHost: 4,
 				IdleConnTimeout:     60 * time.Second,
@@ -160,6 +169,12 @@ func (c *ControlClient) post(ctx context.Context, path string, body any, out any
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// Name the interception explicitly: the Location host is the single most
+		// useful piece of information for whoever has to unblock the fleet.
+		return fmt.Errorf("%s returned %d redirecting to %q - the control plane is behind an identity proxy that the agent cannot authenticate to; exempt this hostname or give the agent service-token credentials",
+			path, resp.StatusCode, resp.Header.Get("Location"))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, truncate(string(data), 200))
