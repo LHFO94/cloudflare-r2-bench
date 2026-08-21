@@ -88,6 +88,22 @@ resource "cloudflare_d1_database" "metrics" {
   account_id            = var.cloudflare_account_id
   name                  = var.worker_name
   primary_location_hint = var.d1_location_hint
+
+  # Must be stated explicitly. The API always reports a value here, so leaving
+  # it out of the configuration is read as "set this to null", and the provider
+  # then sends null on update, which the API rejects:
+  #
+  #   400 Invalid property: read_replication => Expected object, received null
+  #
+  # That turns every subsequent apply into a hard failure, not just the one
+  # that changes something about D1.
+  #
+  # "disabled" is also the behaviour this benchmark wants: replicas would serve
+  # stale reads to the watch page while a run is in flight, and every write
+  # here comes from agents reporting metrics rather than from readers.
+  read_replication = {
+    mode = "disabled"
+  }
 }
 
 # ---------------------------------------------------------------------------
