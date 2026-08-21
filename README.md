@@ -174,15 +174,15 @@ Create an R2 API token under R2 > Manage API tokens. **Scope it to the
 That scoping is the actual security control here, so it is worth doing properly.
 The credential reaches the VMs through **instance metadata**, which means it is:
 
-- readable by anyone with `compute.instances.get` on the project — on
-  `globalse-198312` that is the `se@`, `cse@`, `im@` and `sirtsquad@` groups
+- readable by anyone with `compute.instances.get` on the project, which in a
+  shared project is typically several broad groups
 - recorded in `terraform.tfstate`, which has no remote backend configured
 - written to `/etc/r2agent/agent.env` on each VM at mode 0600
 
 **There is no secret store in this design, in GCP or anywhere else.**
 Secret Manager would avoid all three, but granting a VM read access needs
-`roles/secretmanager.admin`, which on this project is held only by
-`sxpadmin@cloudflare.com`. Metadata is what the available permissions allow, so
+`roles/secretmanager.admin`, which on a shared project you are unlikely to hold.
+Metadata is what the available permissions allow, so
 the scoping is doing the work a secret store otherwise would: a bucket-scoped
 token makes the worst case "someone deletes disposable benchmark fixtures"
 rather than "someone deletes production objects".
@@ -275,8 +275,8 @@ correct. Nothing complains until the apply is already partway through creating
 Cloudflare resources.
 
 ```bash
-gcloud auth application-default login          # choose luuk@cloudflare.com
-gcloud auth application-default set-quota-project globalse-198312
+gcloud auth application-default login          # choose the right account
+gcloud auth application-default set-quota-project "$CLOUDSDK_CORE_PROJECT"
 ```
 
 `make preflight` prints the ADC identity and confirms it can actually reach the
@@ -284,7 +284,7 @@ project, so you never have to take this on trust.
 
 ```bash
 gcloud services enable compute.googleapis.com storage.googleapis.com \
-  --project=globalse-198312
+  --project="$CLOUDSDK_CORE_PROJECT"
 ```
 
 If you lack `serviceusage.services.enable`, ask a project owner; this is the one
@@ -292,10 +292,10 @@ step Terraform cannot do for you.
 
 ### Permissions this stack assumes
 
-Terraform needs `compute.admin`, `storage.admin` and `iam.serviceAccountAdmin`,
-all of which the SE groups hold on `globalse-198312`. It deliberately creates
-**no project-level IAM bindings**, because `resourcemanager.projectIamAdmin` is
-not available — see [Watching a run](#watching-a-run) for what that costs.
+Terraform needs `compute.admin`, `storage.admin` and `iam.serviceAccountAdmin`.
+It deliberately creates **no project-level IAM bindings**, because
+`resourcemanager.projectIamAdmin` is often not available on a shared project —
+see [Watching a run](#watching-a-run) for what that costs.
 
 ---
 
@@ -473,10 +473,10 @@ means it drained and the interval went on handshakes.
 
 **There is no fleet-wide log view.** Shipping to Cloud Logging needs
 `roles/logging.logWriter` on the agent service account, and granting any
-project-level role needs `resourcemanager.projectIamAdmin`, which on
-`globalse-198312` belongs to `jeffh@cloudflare.com` alone. So the agents are
-granted nothing at project level and their output stays local: serial console,
-or `journalctl -u r2agent -f` over SSH.
+project-level role needs `resourcemanager.projectIamAdmin`, which on a shared
+project is usually restricted to a single owner. So the agents are granted
+nothing at project level and their output stays local: serial console, or
+`journalctl -u r2agent -f` over SSH.
 
 In practice this matters less than it sounds. The metrics you actually care
 about are pushed to D1 and rendered on the watch page; the logs are only for

@@ -191,15 +191,22 @@ else
   else
     adc_email=$(curl -s --max-time 15 "https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=$adc_token" \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("email",""))' 2>/dev/null)
-    project="${CLOUDSDK_CORE_PROJECT:-globalse-198312}"
+    project="${CLOUDSDK_CORE_PROJECT:-}"
 
-    probe=$(curl -s --max-time 15 -H "Authorization: Bearer $adc_token" \
-      "https://compute.googleapis.com/compute/v1/projects/$project" \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("name") or "ERR:"+d.get("error",{}).get("message","unknown"))' 2>/dev/null)
+    if [[ -z "$project" ]]; then
+      warn "CLOUDSDK_CORE_PROJECT unset - cannot check that ADC reaches the project"
+      probe=""
+    else
+      probe=$(curl -s --max-time 15 -H "Authorization: Bearer $adc_token" \
+        "https://compute.googleapis.com/compute/v1/projects/$project" \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("name") or "ERR:"+d.get("error",{}).get("message","unknown"))' 2>/dev/null)
+    fi
 
-    if [[ "$probe" == ERR:* ]]; then
+    if [[ -z "$project" ]]; then
+      : # already warned
+    elif [[ "$probe" == ERR:* ]]; then
       bad "ADC identity <$adc_email> cannot reach $project: ${probe#ERR:}"
-      echo "        Fix: gcloud auth application-default login   (choose luuk@cloudflare.com)"
+      echo "        Fix: gcloud auth application-default login   (choose the right account)"
     else
       ok "ADC identity <$adc_email> can reach $project"
     fi

@@ -7,12 +7,12 @@
 # old region.
 deployment_id = "aug20"
 
-cloudflare_account_id = "1aeca2f2fd756d1dad2398a75a92c880"
+cloudflare_account_id = "your-cloudflare-account-id"
 
 # Workers & Pages > Overview in the dashboard, without ".workers.dev".
 workers_dev_subdomain = "luuk-dev"
 
-gcp_project_id = "globalse-198312"
+gcp_project_id = "your-gcp-project-id"
 
 # us-west2 pairs with R2 "wnam" and has the verified vCPU and external IP
 # quota for 8 x n2-standard-8. Changing this without changing r2_location in

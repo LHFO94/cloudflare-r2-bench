@@ -29,7 +29,7 @@
 		"directory": "./assets",
 	},
 	"vars": {
-		"R2_ACCOUNT_ID": "1aeca2f2fd756d1dad2398a75a92c880",
+		"R2_ACCOUNT_ID": "your-cloudflare-account-id",
 		"DEPLOYMENT_AGENTS": "1",
 		"MAX_WORKERS_PER_AGENT": "2048",
 	},
