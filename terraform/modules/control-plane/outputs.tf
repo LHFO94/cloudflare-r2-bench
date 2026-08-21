@@ -4,7 +4,7 @@ output "worker_url" {
 }
 
 output "dashboard_url" {
-  description = "Ready-to-open operator URL. The token is captured into sessionStorage and stripped from the address bar on load."
+  description = "Ready-to-open operator URL. The token is captured into localStorage and stripped from the address bar on load."
   value       = "${local.worker_url}/?token=${random_password.admin_token.result}"
   sensitive   = true
 }
