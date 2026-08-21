@@ -10,12 +10,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"sync"
@@ -36,6 +38,7 @@ type options struct {
 	concurrency  int
 	region       string
 	force        bool
+	repair       bool
 	dryRun       bool
 }
 
@@ -57,6 +60,7 @@ func main() {
 	flag.IntVar(&o.concurrency, "concurrency", env.Int("SEEDER_CONCURRENCY", 256), "parallel PUTs")
 	flag.StringVar(&o.region, "region", env.String("R2_REGION", "auto"), "S3 region")
 	flag.BoolVar(&o.force, "force", false, "reseed buckets even if the sentinel matches")
+	flag.BoolVar(&o.repair, "repair", false, "list each bucket and write only the objects that are missing")
 	flag.BoolVar(&o.dryRun, "dry-run", false, "report what would be written and exit")
 	flag.Parse()
 
@@ -84,7 +88,9 @@ func main() {
 		o.bucketCount, o.keyspace, o.objectSize, totalObjects, float64(totalBytes)/1e9)
 	log.Printf("estimated Class A cost: $%.2f (at $4.50 per million)", float64(totalObjects)/1e6*4.50)
 
-	if o.dryRun {
+	// A repair dry run has to inspect the buckets to say anything useful, so
+	// it falls through to run() and stops after planning.
+	if o.dryRun && !o.repair {
 		for i := 0; i < min(o.bucketCount, 3); i++ {
 			log.Printf("would seed %s with %s .. %s", naming.BucketName(i),
 				naming.ObjectKey(0), naming.ObjectKey(o.keyspace-1))
@@ -125,6 +131,10 @@ type seeder struct {
 
 	written atomic.Uint64
 	failed  atomic.Uint64
+	// Failures attributed to the bucket they belong to. A bucket is only
+	// sentinelled if none of its own objects failed, so one bad bucket no
+	// longer voids the bookkeeping for every other bucket in the run.
+	failedPerBucket []atomic.Uint64
 }
 
 type job struct {
@@ -133,12 +143,81 @@ type job struct {
 }
 
 func (s *seeder) run(ctx context.Context) error {
+	s.failedPerBucket = make([]atomic.Uint64, s.opts.bucketCount)
+
 	buckets := s.bucketsToSeed(ctx)
 	if len(buckets) == 0 {
 		log.Print("all buckets already seeded; use -force to reseed")
 		return nil
 	}
-	log.Printf("seeding %d of %d buckets", len(buckets), s.opts.bucketCount)
+
+	// plan[b] is the set of key indices still to write for bucket b. In repair
+	// mode that is whatever listing says is absent; otherwise it is everything.
+	plan := make(map[int][]int, len(buckets))
+	total := 0
+	if s.opts.repair {
+		// Listing is 40 round trips per bucket. Done one bucket at a time that
+		// is minutes of silence before a single object is written, so fan the
+		// buckets out and only serialise the pages within each one.
+		log.Printf("listing %d buckets to find what is missing", len(buckets))
+		type result struct {
+			bucket  int
+			missing []int
+			err     error
+		}
+		results := make(chan result, len(buckets))
+		sem := make(chan struct{}, min(len(buckets), 16))
+		var lwg sync.WaitGroup
+		for _, b := range buckets {
+			lwg.Add(1)
+			go func(b int) {
+				defer lwg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				missing, err := s.missingKeys(ctx, b)
+				results <- result{bucket: b, missing: missing, err: err}
+			}(b)
+		}
+		lwg.Wait()
+		close(results)
+
+		for r := range results {
+			if r.err != nil {
+				return fmt.Errorf("listing %s: %w", s.naming.BucketName(r.bucket), r.err)
+			}
+			if len(r.missing) > 0 {
+				log.Printf("%s: %d of %d objects missing",
+					s.naming.BucketName(r.bucket), len(r.missing), s.opts.keyspace)
+				plan[r.bucket] = r.missing
+				total += len(r.missing)
+			}
+		}
+		if total == 0 {
+			if s.opts.dryRun {
+				log.Print("nothing missing; dry run, no sentinels written")
+				return nil
+			}
+			// Nothing to write, but the sentinels are what was lost, so still
+			// stamp every bucket that is genuinely complete.
+			return s.writeSentinels(ctx, buckets)
+		}
+		log.Printf("repairing %d objects across %d buckets, about $%.2f",
+			total, len(plan), float64(total)/1e6*4.50)
+		if s.opts.dryRun {
+			log.Print("dry run, nothing written")
+			return nil
+		}
+	} else {
+		for _, b := range buckets {
+			all := make([]int, s.opts.keyspace)
+			for k := range all {
+				all[k] = k
+			}
+			plan[b] = all
+			total += len(all)
+		}
+		log.Printf("seeding %d of %d buckets", len(buckets), s.opts.bucketCount)
+	}
 
 	jobs := make(chan job, s.opts.concurrency*2)
 	var wg sync.WaitGroup
@@ -151,10 +230,10 @@ func (s *seeder) run(ctx context.Context) error {
 	}
 
 	done := make(chan struct{})
-	go s.progress(done, uint64(len(buckets)*s.opts.keyspace))
+	go s.progress(done, uint64(total))
 
 	for _, b := range buckets {
-		for k := 0; k < s.opts.keyspace; k++ {
+		for _, k := range plan[b] {
 			jobs <- job{bucket: b, key: k}
 		}
 	}
@@ -162,17 +241,32 @@ func (s *seeder) run(ctx context.Context) error {
 	wg.Wait()
 	close(done)
 
-	if failed := s.failed.Load(); failed > 0 {
-		return fmt.Errorf("%d objects failed to write", failed)
+	// Sentinel the buckets that came through clean before reporting the
+	// failure. Bailing out first would throw away the record of every bucket
+	// that did land, forcing a full reseed to repair a handful of objects.
+	if err := s.writeSentinels(ctx, buckets); err != nil {
+		return err
 	}
+	log.Printf("wrote %d objects across %d buckets", s.written.Load(), len(buckets))
 
-	// Only mark buckets complete once every object landed.
+	if failed := s.failed.Load(); failed > 0 {
+		return fmt.Errorf("%d objects failed to write; re-run with -repair to fill the gaps", failed)
+	}
+	return nil
+}
+
+// writeSentinels marks every bucket that had no failures of its own as
+// complete, so a later run skips it.
+func (s *seeder) writeSentinels(ctx context.Context, buckets []int) error {
 	for _, b := range buckets {
+		if n := s.failedPerBucket[b].Load(); n > 0 {
+			log.Printf("%s: %d objects failed, leaving it unsentinelled", s.naming.BucketName(b), n)
+			continue
+		}
 		if err := s.writeSentinel(ctx, b); err != nil {
 			return fmt.Errorf("writing sentinel for %s: %w", s.naming.BucketName(b), err)
 		}
 	}
-	log.Printf("wrote %d objects across %d buckets", s.written.Load(), len(buckets))
 	return nil
 }
 
@@ -214,6 +308,7 @@ func (s *seeder) worker(ctx context.Context, jobs <-chan job) {
 		}
 
 		if err := s.putWithRetry(ctx, j.bucket, s.naming.ObjectKey(j.key), buf); err != nil {
+			s.failedPerBucket[j.bucket].Add(1)
 			if s.failed.Add(1) <= 10 {
 				log.Printf("PUT %s/%s failed: %v", s.naming.BucketName(j.bucket), s.naming.ObjectKey(j.key), err)
 			}
@@ -224,7 +319,10 @@ func (s *seeder) worker(ctx context.Context, jobs <-chan job) {
 }
 
 func (s *seeder) putWithRetry(ctx context.Context, bucketIdx int, key string, body []byte) error {
-	const attempts = 4
+	// Six attempts spans roughly six seconds. Four spanned about 1.5s, which
+	// was too short to ride out a two-second DNS outage and cost a run 5,268
+	// objects.
+	const attempts = 6
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
@@ -335,4 +433,82 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// listResult is the subset of ListObjectsV2 we need.
+type listResult struct {
+	IsTruncated           bool   `xml:"IsTruncated"`
+	NextContinuationToken string `xml:"NextContinuationToken"`
+	Contents              []struct {
+		Key string `xml:"Key"`
+	} `xml:"Contents"`
+}
+
+// missingKeys returns the key indices absent from a bucket. R2 has no O(1)
+// object count, so the bucket has to be enumerated either way; collecting the
+// keys while we are here costs nothing and lets a repair write only the gaps
+// instead of rewriting whole buckets.
+func (s *seeder) missingKeys(ctx context.Context, bucketIdx int) ([]int, error) {
+	present := make(map[string]struct{}, s.opts.keyspace)
+	token := ""
+	for {
+		page, err := s.listPage(ctx, bucketIdx, token)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range page.Contents {
+			present[c.Key] = struct{}{}
+		}
+		if !page.IsTruncated || page.NextContinuationToken == "" {
+			break
+		}
+		token = page.NextContinuationToken
+	}
+
+	var missing []int
+	for k := 0; k < s.opts.keyspace; k++ {
+		if _, ok := present[s.naming.ObjectKey(k)]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	return missing, nil
+}
+
+func (s *seeder) listPage(ctx context.Context, bucketIdx int, token string) (*listResult, error) {
+	// SigV4 signs the canonical query string verbatim, so it has to be built
+	// sorted by key and encoded exactly as it goes on the wire.
+	q := "list-type=2&max-keys=1000&prefix=" + queryEscape(s.opts.keyPrefix)
+	if token != "" {
+		q = "continuation-token=" + queryEscape(token) + "&" + q
+	}
+
+	url := fmt.Sprintf("%s/%s?%s", s.opts.endpoint, s.naming.BucketName(bucketIdx), q)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.URL.RawQuery = q
+	s.signer.Sign(req, r2.EmptyPayloadSHA256, time.Now())
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<22))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out listResult
+	if err := xml.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("parsing list response: %w", err)
+	}
+	return &out, nil
+}
+
+// queryEscape encodes a query value the way SigV4 requires: every reserved
+// character percent-encoded, and a space as %20 rather than +.
+func queryEscape(v string) string {
+	return strings.ReplaceAll(neturl.QueryEscape(v), "+", "%20")
 }
