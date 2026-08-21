@@ -96,16 +96,53 @@ the next minute; a lost queue message would hang a job forever.
 
 ## One-time setup
 
+### 0. Credentials live in `.env`
+
+Copy the template and fill it in as you work through the steps below:
+
+```bash
+cp .env.example .env
+```
+
+The `Makefile` includes `.env` and exports it, so every `make` target picks the
+credentials up regardless of which shell or terminal tab you are in. `.env` is
+gitignored. Nothing secret goes in a tfvars file.
+
+Values are parsed by make, not by a shell, so **no quotes and no spaces around
+the `=`**. `FOO=bar`, never `FOO='bar'`.
+
+At any point, check where you stand:
+
+```bash
+make preflight
+```
+
+That validates the API token against Cloudflare's API, checks the R2 key shapes,
+confirms your GCP credentials can actually reach the project, and verifies the
+agent binary is current. `make tf-plan` and `make tf-apply` run it automatically.
+It is worth running by hand first — an apply that gets halfway through Cloudflare
+before failing on GCP leaves real buckets behind, and **R2 pins a bucket name to
+its region permanently**.
+
 ### 1. Cloudflare API token
 
 Needs **Account / Workers Scripts / Edit**, **Account / D1 / Edit** and
 **Account / Workers R2 Storage / Edit**.
 
-```bash
-export CLOUDFLARE_API_TOKEN='...'
+```
+CLOUDFLARE_API_TOKEN=...
 ```
 
-Used by both Terraform and wrangler. Never put it in a tfvars file.
+Used by both Terraform and wrangler.
+
+Two things this is *not*, both of which fail confusingly:
+
+- **Your wrangler login.** Wrangler works via an OAuth session; the Terraform
+  provider cannot use it and will 401.
+- **An R2 key.** The R2 token screen shows an access key id (32 hex) and a
+  secret access key (64 hex) next to the token. Neither authenticates against
+  `api.cloudflare.com`. A real API token is ~40 mixed-case characters.
+  `make preflight` checks for the 64-hex mix-up by name.
 
 ### 2. R2 S3 credentials
 
@@ -152,11 +189,30 @@ terraform apply -target=module.stack.module.r2
 Now the `r2bench-<deployment_id>-NN` buckets exist. Create the scoped token
 against them, re-export the real values, and continue with the full apply.
 
-### 3. Enable GCP APIs
+### 3. GCP credentials and APIs
+
+There are **two separate GCP identities** here, and getting one right does not
+get you the other:
+
+| | Used by | Set with |
+|---|---|---|
+| gcloud config account | `gcloud` CLI, `make agents` | `CLOUDSDK_CORE_ACCOUNT` in `.env` |
+| Application Default Credentials | **Terraform's Google provider** | `gcloud auth application-default login` |
+
+ADC is the one that matters for `terraform apply`, and it is easy to have it
+quietly pointing at a personal Google account while `gcloud config` looks
+correct. Nothing complains until the apply is already partway through creating
+Cloudflare resources.
 
 ```bash
-gcloud config set account luuk@cloudflare.com   # not the personal account
+gcloud auth application-default login          # choose luuk@cloudflare.com
+gcloud auth application-default set-quota-project globalse-198312
+```
 
+`make preflight` prints the ADC identity and confirms it can actually reach the
+project, so you never have to take this on trust.
+
+```bash
 gcloud services enable compute.googleapis.com storage.googleapis.com \
   --project=globalse-198312
 ```
