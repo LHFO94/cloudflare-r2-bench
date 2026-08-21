@@ -135,6 +135,23 @@ export TF_VAR_r2_secret_access_key='...'
 
 Rotate the token after a run.
 
+#### Chicken and egg: create the buckets first
+
+R2's token UI can only scope to buckets that already exist, so the buckets have
+to be created before the token. Apply the R2 module on its own, then come back:
+
+```bash
+cd terraform/envs/smoke
+terraform init
+
+# Placeholders: the R2 module does not use them, but Terraform requires a value.
+export TF_VAR_r2_access_key_id='pending' TF_VAR_r2_secret_access_key='pending'
+terraform apply -target=module.stack.module.r2
+```
+
+Now the `r2bench-<deployment_id>-NN` buckets exist. Create the scoped token
+against them, re-export the real values, and continue with the full apply.
+
 ### 3. Enable GCP APIs
 
 ```bash
