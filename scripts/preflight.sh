@@ -132,13 +132,32 @@ if [[ -n "${ACCOUNT_ID:-}" && -n "${DEPLOYMENT_ID:-}" && -n "${CLOUDFLARE_API_TO
   # Newline-separated string rather than an array: macOS ships bash 3.2, which
   # has no `mapfile`, and errors on ${#arr[@]} for an empty array under `set -u`.
   # Bucket names cannot contain spaces, so word splitting below is safe.
-  BUCKET_LIST=$(cf "accounts/$ACCOUNT_ID/r2/buckets" | python3 -c "
-import json,sys
+  # The endpoint pages at 20 and this account has unrelated buckets that sort
+  # ahead of r2bench-*, so a single call checked only the first ten and
+  # reported all-green. Follow the cursor; a partial check that looks complete
+  # is worse than no check.
+  CURSOR=""
+  BUCKET_LIST=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    PAGE_PATH="accounts/$ACCOUNT_ID/r2/buckets?per_page=1000"
+    [[ -n "$CURSOR" ]] && PAGE_PATH="$PAGE_PATH&cursor=$CURSOR"
+    # First line is the next cursor (url-encoded, empty when exhausted); the
+    # rest are matching bucket names.
+    PAGE=$(cf "$PAGE_PATH" | python3 -c "
+import json,sys,urllib.parse
 try: d=json.load(sys.stdin)
-except Exception: sys.exit(0)
+except Exception:
+    print(); sys.exit(0)
+print(urllib.parse.quote((d.get('result_info') or {}).get('cursor') or '', safe=''))
 for b in (d.get('result') or {}).get('buckets') or []:
     if b.get('name','').startswith('r2bench-$DEPLOYMENT_ID-'): print(b['name'])
 " 2>/dev/null)
+    CURSOR=$(printf '%s\n' "$PAGE" | head -1)
+    NAMES=$(printf '%s\n' "$PAGE" | tail -n +2)
+    [[ -n "$NAMES" ]] && BUCKET_LIST=$(printf '%s\n%s' "$BUCKET_LIST" "$NAMES")
+    [[ -z "$CURSOR" ]] && break
+  done
+  BUCKET_LIST=$(printf '%s\n' "$BUCKET_LIST" | grep -v '^$' || true)
 
   if [[ -z "$BUCKET_LIST" ]]; then
     warn "no r2bench-$DEPLOYMENT_ID-* buckets yet - run: make tf-apply-r2"
