@@ -187,9 +187,12 @@ func reportLoop(ctx context.Context, control *ControlClient, a Assignment, m *Me
 			// newConns is the diagnostic: after warmup it should be ~0. A spike
 			// alongside a throughput dip means the pool was drained and the
 			// interval was spent on handshakes, not on the target being slow.
-			log.Printf("tick %d: %.0f RPS, mean %.1fms, p95 %.1fms, p99 %.1fms, errors %d, conns %d new / %d reused",
-				tick, report.RPS, report.Latency, report.P95, report.P99, delta.Errors,
-				delta.NewConns, delta.ReusedConns)
+			// wire is the server round trip; mean includes time the request sat
+			// queued inside this agent. wire << mean means we are measuring our
+			// own CPU starvation rather than R2.
+			log.Printf("tick %d: %.0f RPS, mean %.1fms, wire %.1fms, p95 %.1fms, p99 %.1fms, errors %d, conns %d new / %d reused",
+				tick, report.RPS, report.Latency, delta.MeanWireMillis(), report.P95, report.P99,
+				delta.Errors, delta.NewConns, delta.ReusedConns)
 		}
 
 		prev = cur

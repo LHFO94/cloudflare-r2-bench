@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -177,13 +178,19 @@ func (r *Runner) worker(ctx context.Context, tokens <-chan struct{}, m *Metrics)
 			m.ObserveError(elapsed, isTimeout(err))
 			continue
 		}
+		if n.wireMicros > 0 {
+			m.ObserveWire(n.wireMicros)
+		}
 		m.ObserveSuccess(elapsed, n.bytes, n.status)
 	}
 }
 
 type fetchResult struct {
-	bytes  int64
-	status int
+	bytes int64
+	// wireMicros is the gap between WroteRequest and GotFirstResponseByte, or
+	// 0 if the request failed before the response started.
+	wireMicros uint64
+	status     int
 }
 
 func (r *Runner) fetch(ctx context.Context, bucketIdx, keyIdx int, m *Metrics) (fetchResult, error) {
@@ -193,12 +200,25 @@ func (r *Runner) fetch(ctx context.Context, bucketIdx, keyIdx int, m *Metrics) (
 	if err != nil {
 		return fetchResult{}, err
 	}
+	// wroteAt and wireMicros are written from httptrace callbacks, which the
+	// net/http docs allow to run on a different goroutine from the caller.
+	// Atomics keep that race-free; the values are only read after Do returns,
+	// by which point both hooks have fired.
+	var wroteAt, wireMicros atomic.Int64
 	if m != nil {
 		// GotConn fires once the request has a connection, reporting whether it
 		// came from the pool. Cheap enough at these rates: one closure and one
 		// atomic increment per request.
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 			GotConn: func(info httptrace.GotConnInfo) { m.ObserveConn(info.Reused) },
+			WroteRequest: func(httptrace.WroteRequestInfo) {
+				wroteAt.Store(time.Now().UnixMicro())
+			},
+			GotFirstResponseByte: func() {
+				if w := wroteAt.Load(); w != 0 {
+					wireMicros.Store(time.Now().UnixMicro() - w)
+				}
+			},
 		}))
 	}
 	r.signer.Sign(req, r2.EmptyPayloadSHA256, time.Now())
@@ -212,10 +232,11 @@ func (r *Runner) fetch(ctx context.Context, bucketIdx, keyIdx int, m *Metrics) (
 	// Drain in bulk. Reading byte-by-byte here would make the client, not R2,
 	// the bottleneck.
 	n, err := io.Copy(io.Discard, resp.Body)
+	wire := uint64(max(wireMicros.Load(), 0))
 	if err != nil {
-		return fetchResult{bytes: n, status: resp.StatusCode}, err
+		return fetchResult{bytes: n, wireMicros: wire, status: resp.StatusCode}, err
 	}
-	return fetchResult{bytes: n, status: resp.StatusCode}, nil
+	return fetchResult{bytes: n, wireMicros: wire, status: resp.StatusCode}, nil
 }
 
 // startPacer implements open-loop rate limiting: tokens are emitted at a fixed

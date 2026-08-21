@@ -34,7 +34,23 @@ type Metrics struct {
 	// indistinguishable from the target slowing down.
 	newConns    atomic.Uint64
 	reusedConns atomic.Uint64
-	buckets     [numBuckets]atomic.Uint64
+	// Time on the wire: from the last byte of the request to the first byte of
+	// the response. Total latency also contains the delay between a worker
+	// being handed a pacer token and the request actually being written, which
+	// is agent scheduling cost, not R2. Under CPU saturation that delay
+	// dominates, so a run can report seconds of "latency" while R2 is
+	// answering in milliseconds. Comparing wire mean against latency mean is
+	// the only way to tell those two apart from the outside.
+	wireSum   atomic.Uint64
+	wireCount atomic.Uint64
+	buckets   [numBuckets]atomic.Uint64
+}
+
+// ObserveWire records server round-trip time for one request, measured between
+// the httptrace WroteRequest and GotFirstResponseByte hooks.
+func (m *Metrics) ObserveWire(micros uint64) {
+	m.wireSum.Add(micros)
+	m.wireCount.Add(1)
 }
 
 // ObserveConn records whether a request got an existing connection or dialled
@@ -88,6 +104,8 @@ type Snapshot struct {
 	Timeouts    uint64
 	NewConns    uint64
 	ReusedConns uint64
+	WireSum     uint64
+	WireCount   uint64
 	Buckets     [numBuckets]uint64
 }
 
@@ -103,6 +121,8 @@ func (m *Metrics) Snapshot() Snapshot {
 		Timeouts:    m.timeouts.Load(),
 		NewConns:    m.newConns.Load(),
 		ReusedConns: m.reusedConns.Load(),
+		WireSum:     m.wireSum.Load(),
+		WireCount:   m.wireCount.Load(),
 	}
 	for i := range m.buckets {
 		s.Buckets[i] = m.buckets[i].Load()
@@ -124,11 +144,24 @@ func (s Snapshot) Sub(prev Snapshot) Snapshot {
 		Timeouts:    s.Timeouts - prev.Timeouts,
 		NewConns:    s.NewConns - prev.NewConns,
 		ReusedConns: s.ReusedConns - prev.ReusedConns,
+		WireSum:     s.WireSum - prev.WireSum,
+		WireCount:   s.WireCount - prev.WireCount,
 	}
 	for i := range s.Buckets {
 		d.Buckets[i] = s.Buckets[i] - prev.Buckets[i]
 	}
 	return d
+}
+
+// MeanWireMillis returns the mean server round-trip time. Compare it against
+// MeanLatencyMillis: if the two are close the agent is keeping up and the
+// reported latency is R2's, and if latency is far larger the gap is queueing
+// inside the agent and the latency figure says nothing about R2.
+func (s Snapshot) MeanWireMillis() float64 {
+	if s.WireCount == 0 {
+		return 0
+	}
+	return float64(s.WireSum) / float64(s.WireCount) / 1000.0
 }
 
 // MeanLatencyMillis returns the arithmetic mean over all observations.

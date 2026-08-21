@@ -215,3 +215,58 @@ func TestConnectionCountersDeltaPerInterval(t *testing.T) {
 		t.Fatalf("delta ReusedConns = %d, want 0", delta.ReusedConns)
 	}
 }
+
+// The whole point of the wire metric is to separate R2's response time from
+// time a request spent queued inside a saturated agent, so the test asserts
+// that the two means can diverge rather than tracking each other.
+func TestMeanWireIsIndependentOfTotalLatency(t *testing.T) {
+	m := NewMetrics()
+	// Ten requests that R2 answered in 5ms but which the agent reported as
+	// 100ms end to end, the signature of a CPU-starved agent.
+	for i := 0; i < 10; i++ {
+		m.ObserveWire(5_000)
+		m.ObserveSuccess(100_000, 1536, 200)
+	}
+
+	s := m.Snapshot()
+	if got := s.MeanWireMillis(); got != 5 {
+		t.Errorf("MeanWireMillis() = %v, want 5", got)
+	}
+	if got := s.MeanLatencyMillis(); got != 100 {
+		t.Errorf("MeanLatencyMillis() = %v, want 100", got)
+	}
+}
+
+func TestWireCountersDeltaPerInterval(t *testing.T) {
+	m := NewMetrics()
+	m.ObserveWire(10_000)
+	first := m.Snapshot()
+
+	m.ObserveWire(30_000)
+	m.ObserveWire(50_000)
+	delta := m.Snapshot().Sub(first)
+
+	if delta.WireCount != 2 {
+		t.Errorf("WireCount = %d, want 2", delta.WireCount)
+	}
+	if got := delta.MeanWireMillis(); got != 40 {
+		t.Errorf("MeanWireMillis() = %v, want 40", got)
+	}
+}
+
+// A request that fails before the first response byte must not be recorded as
+// a zero-millisecond round trip, which would drag the mean toward zero and
+// disguise a saturated target as a fast one.
+func TestFailedRequestIsExcludedFromWireMean(t *testing.T) {
+	m := NewMetrics()
+	m.ObserveWire(20_000)
+	m.ObserveError(500_000, true) // timed out, no wire observation
+
+	s := m.Snapshot()
+	if s.WireCount != 1 {
+		t.Errorf("WireCount = %d, want 1", s.WireCount)
+	}
+	if got := s.MeanWireMillis(); got != 20 {
+		t.Errorf("MeanWireMillis() = %v, want 20", got)
+	}
+}
