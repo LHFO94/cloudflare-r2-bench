@@ -1,0 +1,21 @@
+terraform/modules/loadgen-pool/startup.sh.tftpl
+  s_070ede3845c769::t_5a04c47ba8524a 68-75,85-86
+terraform/modules/loadgen-pool/variables.tf
+  s_070ede3845c769::t_c60c97c76ec4cd 65,67,69-77,80-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "959ba2635fdb2156fe4cf7685dd6d678ff6d4812",
+  "prompts": {},
+  "sessions": {
+    "s_070ede3845c769": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fe6bb6248ffebNVSu4t3qgmQIE",
+        "model": "claude-opus-5"
+      },
+      "human_author": "LHFO94 <dhr.l.hofman@gmail.com>"
+    }
+  }
+}
