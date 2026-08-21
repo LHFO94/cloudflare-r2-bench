@@ -20,32 +20,45 @@
 
         <section class="panel">
             <h2>Start job</h2>
+
+            <div class="field">
+                <label>Preset</label>
+                <div class="presets">
+                    <button type="button" class="secondary" data-preset="smoke">Smoke test</button>
+                    <button type="button" class="secondary" data-preset="standard">Standard run</button>
+                </div>
+                <p class="muted" id="presetHint"></p>
+            </div>
+
             <form id="startForm" class="form">
                 <div class="field">
                     <label for="targetRPS">Target RPS (aggregate)</label>
-                    <input id="targetRPS" type="number" value="80000" min="1" step="1000" required />
+                    <!-- step must stay 1. With step="1000" and min="1" the browser
+                         only accepts 1, 1001, 2001... so a round 2000 is silently
+                         rejected while 2001 works. -->
+                    <input id="targetRPS" type="number" value="2000" min="1" step="1" required />
                 </div>
 
                 <div class="field">
                     <label for="agents">Agents (load-generator VMs)</label>
-                    <input id="agents" type="number" value="8" min="1" max="512" step="1" required />
+                    <input id="agents" type="number" value="1" min="1" max="512" step="1" required />
                     <p class="muted" id="perAgentHint"></p>
                 </div>
 
                 <div class="field">
                     <label for="workersPerAgent">Workers per agent</label>
-                    <input id="workersPerAgent" type="number" value="512" min="1" step="1" required />
+                    <input id="workersPerAgent" type="number" value="64" min="1" step="1" required />
                     <p class="muted">In-flight requests per VM. Pacing is done by the rate limiter; this only has to be high enough not to be the bottleneck.</p>
                 </div>
 
                 <div class="field">
                     <label for="duration">Duration (minutes)</label>
-                    <input id="duration" type="number" value="15" min="1" max="120" step="1" required />
+                    <input id="duration" type="number" value="2" min="1" max="120" step="1" required />
                 </div>
 
                 <div class="field">
                     <label for="startDelaySeconds">Start delay (seconds)</label>
-                    <input id="startDelaySeconds" type="number" value="30" min="0" max="600" step="5" required />
+                    <input id="startDelaySeconds" type="number" value="30" min="0" max="600" step="1" required />
                     <p class="muted">Time for every agent to check in and warm its connection pool so all VMs start together.</p>
                 </div>
 
@@ -71,6 +84,60 @@
         const agents = document.getElementById("agents");
         const unthrottled = document.getElementById("unthrottled");
         const perAgentHint = document.getElementById("perAgentHint");
+        const presetHint = document.getElementById("presetHint");
+
+        // Defaults used to be the standard run's, which is wrong on any smaller
+        // deployment: asking for 8 agents when Terraform provisioned 1 leaves
+        // seven slots unfilled and delivers an eighth of the requested load,
+        // while still reporting as a normal run.
+        const PRESETS = {
+            smoke: {
+                label: "Smoke test: 1 VM, ~2k RPS. Confirms the pipeline works before spending real money.",
+                targetRPS: 2000, agents: 1, workersPerAgent: 64, duration: 2,
+                startDelaySeconds: 30, unthrottled: false,
+            },
+            standard: {
+                label: "Standard run: 8 VMs, 80k RPS for 15 min. 80k RPS is 288M Class B ops/hr, about $104/hr at $0.36 per million.",
+                targetRPS: 80000, agents: 8, workersPerAgent: 512, duration: 15,
+                startDelaySeconds: 30, unthrottled: false,
+            },
+        };
+
+        function applyPreset(name) {
+            const p = PRESETS[name];
+            if (!p) return;
+            targetRPS.value = p.targetRPS;
+            agents.value = p.agents;
+            document.getElementById("workersPerAgent").value = p.workersPerAgent;
+            document.getElementById("duration").value = p.duration;
+            document.getElementById("startDelaySeconds").value = p.startDelaySeconds;
+            unthrottled.checked = p.unthrottled;
+            presetHint.textContent = p.label;
+            updatePerAgentHint();
+        }
+
+        for (const b of document.querySelectorAll("[data-preset]")) {
+            b.addEventListener("click", () => applyPreset(b.dataset.preset));
+        }
+
+        // Match the form to the fleet that actually exists. Without this the
+        // only way to know you asked for eight agents against a one-VM
+        // deployment is to notice the job delivering an eighth of the load.
+        let provisionedAgents = null;
+        (async function loadDeploymentConfig() {
+            try {
+                const cfg = await api("/api/v1/config");
+                provisionedAgents = cfg.provisionedAgents;
+                if (!provisionedAgents) return;
+                applyPreset(provisionedAgents === 1 ? "smoke" : "standard");
+                // The preset carries the fan-out it was written for; the real
+                // fleet size wins.
+                agents.value = provisionedAgents;
+                updatePerAgentHint();
+            } catch {
+                // Advisory only; a failure here must not block starting a job.
+            }
+        })();
 
         // Sizing is an explicit operator decision now: the number of agents is
         // however many VMs Terraform provisioned, not something the UI can
@@ -78,13 +145,20 @@
         function updatePerAgentHint() {
             const total = Math.floor(Number(targetRPS.value)) || 0;
             const count = Math.floor(Number(agents.value)) || 0;
+            let text;
             if (unthrottled.checked) {
-                perAgentHint.textContent = "Unthrottled: each agent runs as fast as its workers allow.";
+                text = "Unthrottled: each agent runs as fast as its workers allow.";
             } else if (count > 0 && total >= count) {
-                perAgentHint.textContent = `~${Math.floor(total / count).toLocaleString()} RPS per agent.`;
+                text = `~${Math.floor(total / count).toLocaleString()} RPS per agent.`;
             } else {
-                perAgentHint.textContent = "Target RPS must be at least the number of agents.";
+                text = "Target RPS must be at least the number of agents.";
             }
+            // Unfilled slots are silent: the job runs, reports normally, and
+            // delivers only the share belonging to agents that turned up.
+            if (provisionedAgents && count > provisionedAgents) {
+                text += `  Warning: only ${provisionedAgents} agent${provisionedAgents === 1 ? " is" : "s are"} provisioned, so ${count - provisionedAgents} slot(s) will never be claimed and the run will fall short of the target.`;
+            }
+            perAgentHint.textContent = text;
         }
 
         for (const el of [targetRPS, agents, unthrottled]) {

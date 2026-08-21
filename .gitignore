@@ -175,6 +175,11 @@ dist/
 
 wrangler.generated.jsonc
 
+# Python bytecode from scripts/
+
+__pycache__/
+*.pyc
+
 # Terraform
 
 **/.terraform/

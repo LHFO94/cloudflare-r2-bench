@@ -79,3 +79,8 @@ variable "access_service_token_duration" {
   type        = string
   default     = "8760h"
 }
+
+variable "agent_count" {
+  description = "Number of load generators this deployment provisions. Surfaced to the UI so it cannot suggest a fan-out larger than the fleet."
+  type        = number
+}

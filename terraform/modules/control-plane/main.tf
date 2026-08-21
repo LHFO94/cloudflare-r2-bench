@@ -123,6 +123,7 @@ resource "local_file" "wrangler_config" {
     r2_account_id      = var.r2_account_id
     d1_database_name   = cloudflare_d1_database.metrics.name
     d1_database_id     = cloudflare_d1_database.metrics.uuid
+    agent_count        = var.agent_count
   })
 }
 

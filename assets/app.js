@@ -2,9 +2,14 @@
  * Shared API helper for the operator UI.
  *
  * The control plane protects /api/v1/* with an admin token. Open any page with
- * ?token=<ADMIN_TOKEN> once; the token is kept in sessionStorage (cleared when
- * the tab closes) and stripped from the address bar so it does not end up in
- * bookmarks, screenshots or the browser history.
+ * ?token=<ADMIN_TOKEN> once; the token is stripped from the address bar so it
+ * does not end up in bookmarks, screenshots or the browser history.
+ *
+ * Stored in localStorage rather than sessionStorage. sessionStorage is dropped
+ * when the tab closes, which meant every new tab dead-ended on a 401 telling
+ * the operator to reconstruct a URL it did not give them. This is a disposable
+ * benchmark control plane, so surviving a tab close is worth more than the
+ * marginal hardening. Use the browser's clear-site-data to sign out.
  */
 const TOKEN_KEY = "r2bench.adminToken";
 
@@ -14,13 +19,13 @@ const TOKEN_KEY = "r2bench.adminToken";
     if (token === null) {
         return;
     }
-    sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(TOKEN_KEY, token);
     url.searchParams.delete("token");
     window.history.replaceState({}, "", url.toString());
 })();
 
 function adminToken() {
-    return sessionStorage.getItem(TOKEN_KEY) ?? "";
+    return localStorage.getItem(TOKEN_KEY) ?? "";
 }
 
 /**
@@ -53,7 +58,13 @@ async function api(path, options = {}) {
     }
 
     if (response.status === 401) {
-        throw new Error("Unauthorized. Reopen this page with ?token=<ADMIN_TOKEN>.");
+        // A stale token is as likely as a missing one, so clear it rather than
+        // leaving the operator stuck behind a credential that cannot work.
+        localStorage.removeItem(TOKEN_KEY);
+        throw new Error(
+            "Unauthorized. Run `make dashboard` (or `terraform output -raw dashboard_url`) " +
+            "and open the URL it prints - it includes the admin token.",
+        );
     }
     if (!response.ok) {
         throw new Error(data?.message ?? `Request failed with status ${response.status}`);

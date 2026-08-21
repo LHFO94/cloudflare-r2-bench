@@ -23,6 +23,9 @@ export async function orchestrator_route(request: Request, env: Env, _ctx: Execu
                 case "/api/v1/jobs":
                     require_admin(request, env);
                     return Response.json(await list_jobs(env));
+                case "/api/v1/config":
+                    require_admin(request, env);
+                    return Response.json(deployment_config(env));
             }
         }
 
@@ -68,6 +71,19 @@ export async function orchestrator_route(request: Request, env: Env, _ctx: Execu
         }
         throw error;
     }
+}
+
+/**
+ * What this deployment was provisioned with, so the UI can default to it.
+ *
+ * Requesting more agents than exist is not rejected anywhere - the unfilled
+ * slots simply never report, and the job runs at a fraction of the requested
+ * rate while otherwise looking healthy. Surfacing the real number is the
+ * cheapest way to stop that happening by accident.
+ */
+function deployment_config(env: Env): { provisionedAgents: number | null } {
+    const raw = Number(env.DEPLOYMENT_AGENTS);
+    return { provisionedAgents: Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null };
 }
 
 /**

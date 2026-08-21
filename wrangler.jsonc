@@ -30,6 +30,7 @@
 	},
 	"vars": {
 		"R2_ACCOUNT_ID": "1aeca2f2fd756d1dad2398a75a92c880",
+		"DEPLOYMENT_AGENTS": "1",
 	},
 	/**
 	 * Reconciliation sweep. Agents push metrics, but nothing pushes when an

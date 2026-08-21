@@ -8,4 +8,11 @@ interface Env {
 	AGENT_TOKEN: string;
 	/** Operator token for /api/v1/* and /start. Unset disables the check (local dev only). */
 	ADMIN_TOKEN: string;
+	/**
+	 * Number of load generators Terraform provisioned, as a string because
+	 * Worker vars are strings. Advisory only: the control plane still allocates
+	 * slots to whichever agents actually poll, so a stale value cannot break a
+	 * run, it just makes the UI's suggestion wrong.
+	 */
+	DEPLOYMENT_AGENTS?: string;
 }

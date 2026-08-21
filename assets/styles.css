@@ -127,6 +127,12 @@ button.secondary {
     color: var(--text);
 }
 
+.presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 button.danger {
     border-color: var(--bad);
     background: var(--bad);

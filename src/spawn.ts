@@ -120,15 +120,28 @@ export async function reap_jobs(env: Env): Promise<{ finalised: number, staleSpa
 
     for (const row of expired.results) {
         const jobId = row["JOB_ID"] as string;
+
+        // A job whose window closed without a single agent ever registering did
+        // not complete, it failed. Reporting COMPLETED with no metrics invites
+        // the reader to treat missing data as a UI glitch rather than a run
+        // that never happened. Rule 3 below also catches this, but only after
+        // five minutes, so any job shorter than that would be finalised here
+        // first and mislabelled purely because of its duration.
+        const spawned = await env.DB.prepare(
+            `SELECT COUNT(*) AS COUNT FROM JOB_SPAWNS WHERE JOB_ID = ?`)
+            .bind(jobId)
+            .first<{ COUNT: number }>();
+        const outcome = (spawned?.COUNT ?? 0) > 0 ? "COMPLETED" : "FAILED";
+
         await env.DB.batch([
             env.DB.prepare(
                 `UPDATE JOB_SPAWNS SET STATUS = 'COMPLETED', UPDATED_AT = current_timestamp
                  WHERE JOB_ID = ? AND STATUS = 'RUNNING'`)
                 .bind(jobId),
             env.DB.prepare(
-                `UPDATE JOBS SET STATUS = 'COMPLETED', UPDATED_AT = current_timestamp
+                `UPDATE JOBS SET STATUS = ?, UPDATED_AT = current_timestamp
                  WHERE JOB_ID = ? AND STATUS IN ('QUEUED', 'RUNNING', 'STOPPING')`)
-                .bind(jobId),
+                .bind(outcome, jobId),
         ]);
         finalised++;
     }

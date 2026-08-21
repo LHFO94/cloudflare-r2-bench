@@ -76,6 +76,7 @@ module "control_plane" {
   worker_name           = local.name
   workers_dev_subdomain = var.workers_dev_subdomain
   d1_location_hint      = var.r2_location
+  agent_count           = var.agent_count
   r2_account_id         = var.cloudflare_account_id
   repo_root             = var.repo_root
 }

@@ -291,6 +291,22 @@ describe("reaper", () => {
 		expect(spawn!["STATUS"]).toBe("COMPLETED");
 	});
 
+	it("fails a short job whose window closed without any agent joining", async () => {
+		// The abandoned-job sweep only fires after five minutes, so a job
+		// shorter than that reaches the expired-window branch first. It must
+		// not be recorded as COMPLETED just because it was brief: there are no
+		// spawns and no metrics, which is a failed run, not a successful one.
+		const jobId = await startJob();
+		await env.DB.prepare("UPDATE JOBS SET STOP_AT = ? WHERE JOB_ID = ?")
+			.bind(Date.now() - 60_000, jobId).run();
+
+		const result = await reap_jobs(env);
+		expect(result.finalised).toBe(1);
+
+		const job = await env.DB.prepare("SELECT STATUS FROM JOBS WHERE JOB_ID = ?").bind(jobId).first();
+		expect(job!["STATUS"]).toBe("FAILED");
+	});
+
 	it("fails a spawn that stopped reporting", async () => {
 		await startJob();
 		const { spawnId } = await poll("vm-0");

@@ -18,7 +18,10 @@
 		"directory": "./assets"
 	},
 	"vars": {
-		"R2_ACCOUNT_ID": "${r2_account_id}"
+		"R2_ACCOUNT_ID": "${r2_account_id}",
+		// How many load generators Terraform provisioned. The UI reads this so
+		// it cannot default to asking for more agents than exist.
+		"DEPLOYMENT_AGENTS": "${agent_count}"
 	},
 	"triggers": {
 		"crons": ["* * * * *"]
