@@ -112,7 +112,17 @@ dashboard: ## Print the operator URL, admin token included
 
 .PHONY: seed
 seed: ## Populate the buckets (safe to re-run; skips already-seeded buckets)
-	@set -a; eval "$$($(TF) output -raw seed_env)"; set +a; \
+	@seed_env="$$($(TF) output -raw seed_env 2>/dev/null || true)"; \
+	  case "$$seed_env" in \
+	    *R2_ENDPOINT=*) ;; \
+	    *) echo "make: seed: '$(TF) output -raw seed_env' produced no usable output." >&2; \
+	       echo "  The '$(ENV)' state has no root outputs. A targeted apply (make tf-apply-r2)" >&2; \
+	       echo "  creates the buckets but never evaluates root outputs, which is the usual cause." >&2; \
+	       echo "  Fix: run 'make tf-apply ENV=$(ENV)', or export R2_ENDPOINT/R2_BUCKET_PREFIX/" >&2; \
+	       echo "  R2_BUCKET_COUNT/R2_KEYSPACE yourself and run 'go run ./cmd/seeder' directly." >&2; \
+	       exit 1 ;; \
+	  esac; \
+	  set -a; eval "$$seed_env"; set +a; \
 	  R2_ACCESS_KEY_ID="$$TF_VAR_r2_access_key_id" \
 	  R2_SECRET_ACCESS_KEY="$$TF_VAR_r2_secret_access_key" \
 	  go run ./cmd/seeder $(SEED_ARGS)
