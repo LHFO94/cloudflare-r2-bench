@@ -7,10 +7,10 @@
 # old region.
 deployment_id = "aug20"
 
-cloudflare_account_id = "5c02ecf03b49174c44394b56a7d39965"
+cloudflare_account_id = "1aeca2f2fd756d1dad2398a75a92c880"
 
 # Workers & Pages > Overview in the dashboard, without ".workers.dev".
-workers_dev_subdomain = "your-subdomain"
+workers_dev_subdomain = "luuk-dev"
 
 gcp_project_id = "globalse-198312"
 
