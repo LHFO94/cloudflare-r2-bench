@@ -60,6 +60,20 @@ would steal their slots. The control plane rejects the second start.
 multiplex the whole agent onto a handful of connections. The agent explicitly
 disables h2 and runs a large connection pool.
 
+*The connection pool is never allowed to expire.* Idle connections are kept
+indefinitely (`IDLE_CONN_TIMEOUT_SECONDS=0`) and the pool is sized to the worker
+count. A pool that drains mid-run makes every subsequent request pay a TCP and
+TLS handshake, which looks exactly like the target slowing down: a throughput
+dip with a long tail and no errors. Each tick reports connections dialled versus
+reused so that failure mode is visible rather than inferred.
+
+*Latency and wire time are measured separately.* Reported latency is wall time
+from a worker picking up a pacer token to the body being drained, so it includes
+any delay before the request was written — which under CPU pressure is the
+larger term. The agent also records the interval between the request being
+written and the first response byte. If the two track each other the latency
+figure is R2's; if wire time is far smaller, the run is measuring the agent.
+
 *Direct external IPs, not Cloud NAT.* A shared NAT gateway would exhaust port
 allocations and become the bottleneck long before R2 did.
 
@@ -80,14 +94,19 @@ the next minute; a lost queue message would hang a job forever.
 | `cmd/seeder/` | One-shot bucket seeder |
 | `internal/r2/` | SigV4 signing, bucket/key naming shared by agent and seeder |
 | `internal/env/` | Shared environment parsing, so agent and seeder cannot disagree |
+| `scripts/` | `preflight.sh` and the R2 credential check it calls |
 | `terraform/modules/` | `r2`, `control-plane`, `loadgen-pool`, and the `stack` that composes them |
 | `terraform/envs/` | `smoke` (1 VM) and `standard` (8 VMs) |
+
+Everything is driven through the `Makefile`; `make help` lists every target. Most
+take `ENV=smoke` (the default) or `ENV=standard`.
 
 ---
 
 ## Prerequisites
 
-- Terraform >= 1.6, Go >= 1.25, Node >= 20, `gcloud`
+- Terraform >= 1.6, Go >= 1.25, Node >= 20, `gcloud`, `python3` (used by
+  `make preflight` to verify the R2 credentials)
 - A Cloudflare account with R2 enabled
 - A GCP project with enough vCPU and in-use external IP quota in the target
   region (8 x `n2-standard-8` needs 64 vCPU and 8 IPs)
@@ -117,9 +136,12 @@ At any point, check where you stand:
 make preflight
 ```
 
-That validates the API token against Cloudflare's API, checks the R2 key shapes,
-confirms your GCP credentials can actually reach the project, and verifies the
-agent binary is current. `make tf-plan` and `make tf-apply` run it automatically.
+That validates the API token against Cloudflare's API, signs a real request
+against each bucket to prove the R2 credentials can read them, confirms your GCP
+credentials can actually reach the project, and verifies the agent binary is
+current. The R2 check is a **warning, not a failure**, because the credentials
+are deliberately absent during `make tf-apply-r2`.
+`make tf-plan` and `make tf-apply` run preflight automatically.
 It is worth running by hand first — an apply that gets halfway through Cloudflare
 before failing on GCP leaves real buckets behind, and **R2 pins a bucket name to
 its region permanently**.
@@ -284,58 +306,89 @@ not available — see [Watching a run](#watching-a-run) for what that costs.
 The smoke environment is one VM, three buckets and a 2,000-key keyspace. It
 exercises every failure mode the standard run has — Worker deploy, D1
 migrations, agent boot, secret fetch, SigV4 signing, metrics reporting — for a
-few cents. The standard run costs roughly $31 for 15 minutes, dominated by R2
-Class B operations at about $104/hour, so do not discover a signing bug there.
+few cents. A 15-minute standard run costs about **$26** in R2 Class B
+operations (80,000 RPS is 72M ops at $0.36 per million, roughly $104/hour), so
+do not discover a signing bug there.
 
 ```bash
-make build-agent
-
-cd terraform/envs/smoke
-cp terraform.tfvars.example terraform.tfvars   # then edit
-terraform init
-terraform apply
+cp terraform/envs/smoke/terraform.tfvars.example \
+   terraform/envs/smoke/terraform.tfvars        # then edit
+make tf-init  ENV=smoke
+make tf-apply ENV=smoke
 ```
+
+`make tf-apply` builds the agent, runs preflight and applies the whole stack.
+Add `ENV=standard` for the 8-VM environment; `ENV` defaults to `smoke`.
 
 ### Step 2 — seed the buckets
 
 Buckets come up empty. Seed them once per deployment:
 
 ```bash
-eval "$(terraform output -raw seed_env)"
-export R2_ACCESS_KEY_ID='...' R2_SECRET_ACCESS_KEY='...'
-
-cd ../../..
-go run ./cmd/seeder -dry-run   # prints object count and estimated Class A cost
-go run ./cmd/seeder
+make seed-dry-run ENV=smoke   # object count and estimated Class A cost
+make seed         ENV=smoke
 ```
 
+Both read `seed_env` from the Terraform outputs and take the R2 keys from
+`.env`, so the seeder cannot disagree with the agents about bucket names or key
+layout.
+
 Re-running is safe. The seeder writes a sentinel object per bucket and skips any
-bucket already holding the expected shape, because every PUT is billable.
+bucket already holding the expected shape, because every PUT is billable. The
+sentinel is only written once **every** object in that bucket landed, so a run
+interrupted by a network blip leaves the affected buckets unsentinelled and a
+second pass repairs exactly those. Do that before benchmarking: a partially
+seeded bucket serves 404s for the missing keys and quietly contaminates the
+results.
+
+If `make seed` reports that the state has no root outputs, the stack was applied
+with `-target` (as `make tf-apply-r2` does), which creates resources without
+evaluating root outputs. Run a full `make tf-apply ENV=...`, or export
+`R2_ENDPOINT`, `R2_BUCKET_PREFIX`, `R2_BUCKET_COUNT` and `R2_KEYSPACE` yourself
+and call `go run ./cmd/seeder` directly.
 
 ### Step 3 — run it
 
 ```bash
-cd terraform/envs/smoke
-terraform output -raw dashboard_url    # open this
+make dashboard ENV=smoke    # open this
 ```
 
-The URL carries the admin token. It is captured into `sessionStorage` and
-stripped from the address bar on load, so it does not end up in your history or
-in a screenshot.
+The URL carries the admin token. It is captured into `localStorage` and stripped
+from the address bar on load, so it does not end up in your history or in a
+screenshot. It persists across reloads, and a 401 does not discard it — once the
+token is out of the address bar it is the only copy you have.
 
-Set **Agents** to the value of `terraform output agent_count` — the control
-plane divides the aggregate target across exactly that many slots and will not
-admit more.
+The form configures itself from the deployment. On load it reads
+`/api/v1/config`, selects the smoke or standard preset to match the fleet size,
+and sets **Agents** to the number of VMs Terraform actually provisioned. The
+control plane divides the aggregate target across exactly that many slots and
+will not admit more.
+
+**Workers per agent** is capped at the fleet's `max_workers_per_agent` (2,048 in
+smoke, 4,096 in standard). The form enforces the cap and the control plane
+rejects anything above it, rather than letting the agent clamp silently — a
+silent clamp makes a configuration mistake look like a throughput ceiling.
+Raising it means changing `max_workers_per_agent` in Terraform, which rolls the
+fleet.
+
+Workers are the concurrency limit, and throughput is `workers / latency`. If a
+run pins exactly at target, the pacer is holding it back and there is headroom;
+if it falls short while latency climbs, you are out of workers or out of CPU.
 
 ### Step 4 — the standard run
 
-Same sequence in `terraform/envs/standard`. Use a **different `deployment_id`**;
-the two stacks are fully independent.
+Same sequence with `ENV=standard`. Use a **different `deployment_id`**; the two
+stacks are fully independent.
+
+Anything that changes the VM boot script — `max_workers_per_agent`,
+`machine_type`, `agent_count`, the R2 credentials, or the agent binary — rolls
+the managed instance group and replaces every VM. Terraform does not show that
+as a destroy in the plan, so do not apply during a run.
 
 ### Step 5 — tear down
 
 ```bash
-terraform destroy
+make tf-destroy ENV=smoke
 ```
 
 The GCE fleet is the recurring cost and it stops the moment the MIG is deleted.
@@ -345,20 +398,49 @@ bill. If you plan a follow-up run within a few days, destroy only the
 load-generator module:
 
 ```bash
-terraform destroy -target=module.stack.module.loadgen
+make tf-destroy-vms ENV=smoke
 ```
 
 ---
 
 ## Operating notes
 
+### Keyspace and what it measures
+
+The standard environment seeds 25 buckets x 40,000 objects of 1,536 bytes: one
+million objects, 1.5 GB. The object size makes this a request-rate benchmark
+rather than a bandwidth one — 80,000 RPS of 1.5 KB objects is about 1 Gbit/s
+across eight VMs, so the network cannot be what breaks.
+
+Be deliberate about the keyspace, because it decides what the run actually
+measures. Reads per object are `RPS x duration / (buckets x keyspace)`: a
+15-minute run at 80,000 RPS issues 72M GETs against 1M objects, so **every
+object is read about 72 times**. That is a warm-read benchmark. None of
+Cloudflare's caching layers sit in front of it — CDN cache, Cache Reserve and
+Tiered Cache all require a custom domain or zone, and the agents talk to the
+`<account>.r2.cloudflarestorage.com` S3 endpoint directly — but a 1.5 GB working
+set is small enough that any caching inside R2 gets every opportunity to help.
+
+To approximate cold random reads, grow the keyspace until reads per object
+approach 1, or shorten the run. At $4.50 per million Class A operations, seeding
+10M objects costs $45 and makes a 2-minute run at 80,000 RPS essentially
+first-touch. Sweeping the same short run across 1M, 10M and 30M objects tells
+you empirically whether a cache is in play at all.
+
 ### Sizing
 
 Each VM is capped by GCP at **1.8 Mpps or 30 Gbps of internet ingress**, flat,
 regardless of machine size. At a 1500-byte MTU that is roughly 21.6 Gbps of
 usable ingress per VM. With ~1.5 KB objects at 10,000 RPS per VM the standard
-run uses about 1.2 Gbps in aggregate, so the fleet is sized for CPU headroom on
-TLS and syscalls, not for bandwidth.
+run moves about 1 Gbit/s of object payload in aggregate, so the fleet is sized
+for CPU headroom on TLS and syscalls, not for bandwidth.
+
+Measured, an `n2-standard-2` saturates at roughly **19,000 RPS** with the CPU at
+97%, which works out near 10,000 RPS per vCPU. Past saturation the reported
+latency is mostly queueing inside the agent, so the standard fleet is
+deliberately oversized: 8 x `n2-standard-8` is 64 vCPU for a job that needs
+about 8, leaving the CPU far from the ceiling where the measurement stops
+meaning anything.
 
 `network_performance_config` / Tier_1 is deliberately not set: it raises
 *egress* only, and this workload's egress is a trickle of GET headers.
@@ -371,12 +453,23 @@ and a preemption mid-run would invalidate the measurement anyway.
 The watch page is the primary view. For the VMs themselves:
 
 ```bash
-terraform output -raw list_instances_command   # instance names
-terraform output -raw logs_command             # serial console for one VM
-terraform output -raw ssh_command              # IAP tunnel into one VM
+make agents ENV=smoke                          # list the running VMs
+terraform -chdir=terraform/envs/smoke output -raw logs_command   # serial console
+terraform -chdir=terraform/envs/smoke output -raw ssh_command    # IAP tunnel
 ```
 
 Then substitute a real instance name for `<suffix>`.
+
+Each agent logs a line per tick, which is the fastest way to tell what is
+actually limiting a run:
+
+```
+tick 12: 19412 RPS, mean 27.3ms, wire 25.9ms, p95 41ms, p99 63ms, errors 0, conns 0 new / 19412 reused
+```
+
+`wire` close to `mean` means the agent is keeping up and the latency is R2's.
+`conns 0 new` means the pool is holding; a mid-run spike in new connections
+means it drained and the interval went on handshakes.
 
 **There is no fleet-wide log view.** Shipping to Cloud Logging needs
 `roles/logging.logWriter` on the agent service account, and granting any
@@ -410,10 +503,24 @@ often a keyspace mismatch between the seeder and the agents. `STATUS_5XX` means
 R2 shed the request. They are counted separately because conflating them wastes
 a run.
 
-If achieved RPS sits below target while latency stays flat, the agents are
-CPU-bound, not R2. Check `Reporting agents` on the watch page first: a VM that
-died mid-run is marked `FAILED` after 90 seconds without a report, and its share
-of the target simply goes unserved.
+When achieved RPS sits below target, work out which of three things it is before
+concluding anything about R2:
+
+- **A missing agent.** Check `Reporting agents` on the watch page first. A VM
+  that died mid-run is marked `FAILED` after 90 seconds without a report, and
+  its share of the target simply goes unserved. A job that expires without any
+  agent ever claiming a slot is also marked `FAILED` rather than left open.
+- **The agents, not the target.** Compare `wire` against `mean` in the agent
+  log. If wire stays low while mean climbs, requests are queueing inside the
+  agent and the latency figure is measuring CPU starvation. Confirm with `top`
+  on a VM: past roughly 95% CPU the numbers are the agent's, not R2's.
+- **The workers.** Throughput is `workers / latency`, so if latency rises and
+  worker count is fixed, RPS falls out of it arithmetically. Raising
+  `workersPerAgent` only helps up to `max_workers_per_agent` and only while
+  there is CPU left to spend.
+
+A run that pins exactly at target with flat latency is pacer-limited, which
+means the fleet has headroom and the target is the only thing capping it.
 
 ---
 
