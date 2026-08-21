@@ -189,6 +189,53 @@ terraform apply -target=module.stack.module.r2
 Now the `r2bench-<deployment_id>-NN` buckets exist. Create the scoped token
 against them, re-export the real values, and continue with the full apply.
 
+### 2b. Cloudflare Access on the Worker
+
+Cloudflare can protect a Worker's `workers.dev` URL with Access, either per
+Worker or account-wide via *protect all Workers by default*. On accounts where
+that is on, **this bites every fresh deployment**: the operator UI keeps working
+because your browser signs in, while every agent gets a login redirect instead
+of a job and the run never leaves `QUEUED`.
+
+The protection is attached to the Worker, not to a hostname, so it does not show
+up under `Zero Trust > Access > Applications` and cannot be found by listing
+Access apps over the API.
+
+Terraform creates an Access service token (`<worker-name>-agents`) and passes it
+to the agents, which send it as `CF-Access-Client-Id` / `CF-Access-Client-Secret`
+on every control-plane request. The one step Terraform cannot do is attach the
+policy, because the Worker's Access configuration is not a Terraform resource:
+
+1. `terraform output access_service_token_name`
+2. Cloudflare dashboard > **Workers & Pages** > your Worker > **Settings** >
+   **Domains & Routes** > `workers.dev` > **Manage Cloudflare Access**
+3. Add a policy with action **Service Auth** and an Include rule of
+   **Service Token** = that token
+
+Action **Service Auth** is required. An Allow policy still demands an identity
+provider login and the agents will keep bouncing.
+
+Two alternatives, if that does not suit:
+
+- Exempt the Worker from Access entirely. The control plane is not left open:
+  every route checks its own token, `AGENT_TOKEN` for agents and `ADMIN_TOKEN`
+  with a constant-time compare for `/api/v1/*`.
+- Set `create_access_service_token = false` if the deploying API token cannot be
+  granted **Access: Service Tokens (Edit)**.
+
+To confirm from a load generator:
+
+```bash
+sudo bash -c 'set -a; source /etc/r2agent/agent.env; set +a;
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+    -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+    "$CONTROL_PLANE_URL/"'
+```
+
+`200` means the token is accepted. `302` means no Service Auth policy includes
+it yet.
+
 ### 3. GCP credentials and APIs
 
 There are **two separate GCP identities** here, and getting one right does not

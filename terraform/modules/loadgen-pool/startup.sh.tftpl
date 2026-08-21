@@ -89,6 +89,11 @@ R2_BUCKET_COUNT=${bucket_count}
 R2_KEYSPACE=${keyspace}
 CONTROL_PLANE_URL=${control_plane_url}
 AGENT_TOKEN=${agent_token}
+# Cloudflare Access service token. Both blank when the control plane is not
+# behind Access; the agent treats blank as "no Access" and refuses to start if
+# only one of the pair is set, since a lone header authenticates nothing.
+CF_ACCESS_CLIENT_ID=${access_client_id}
+CF_ACCESS_CLIENT_SECRET=${access_client_secret}
 AGENT_ID=$AGENT_ID
 AGENT_REGION=${region}
 POLL_INTERVAL_SECONDS=${poll_interval_seconds}

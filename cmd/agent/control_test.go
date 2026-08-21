@@ -54,6 +54,86 @@ func TestPollReportsRedirectInsteadOfFollowingIt(t *testing.T) {
 	}
 }
 
+// With a service token configured the agent must present it on every request,
+// otherwise Access answers the poll with a login redirect.
+func TestPollSendsAccessServiceTokenHeaders(t *testing.T) {
+	var gotID, gotSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotID = r.Header.Get("CF-Access-Client-Id")
+		gotSecret = r.Header.Get("CF-Access-Client-Secret")
+		_, _ = w.Write([]byte(`{"action":"idle"}`))
+	}))
+	defer srv.Close()
+
+	client := NewControlClient(&Config{
+		ControlPlaneURL:    srv.URL,
+		AgentToken:         "token",
+		AgentID:            "agent-0",
+		AgentRegion:        "us-west2",
+		AccessClientID:     "client.access",
+		AccessClientSecret: "shhh",
+	})
+
+	if _, err := client.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if gotID != "client.access" || gotSecret != "shhh" {
+		t.Errorf("headers not sent: id=%q secret=%q", gotID, gotSecret)
+	}
+}
+
+// Without a token the headers must be absent rather than empty: an empty
+// CF-Access-Client-Id is not equivalent to omitting it.
+func TestPollOmitsAccessHeadersWhenUnset(t *testing.T) {
+	var present bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, present = r.Header["Cf-Access-Client-Id"]
+		_, _ = w.Write([]byte(`{"action":"idle"}`))
+	}))
+	defer srv.Close()
+
+	client := NewControlClient(&Config{
+		ControlPlaneURL: srv.URL,
+		AgentToken:      "token",
+		AgentID:         "agent-0",
+		AgentRegion:     "us-west2",
+	})
+
+	if _, err := client.Poll(context.Background()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if present {
+		t.Error("CF-Access-Client-Id sent despite no service token being configured")
+	}
+}
+
+// When credentials were supplied and Access still redirects, the operator needs
+// to be pointed at the policy rather than back at the credentials.
+func TestRedirectErrorDistinguishesRejectedServiceToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "https://team.cloudflareaccess.com/cdn-cgi/access/login")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client := NewControlClient(&Config{
+		ControlPlaneURL:    srv.URL,
+		AgentToken:         "token",
+		AgentID:            "agent-0",
+		AgentRegion:        "us-west2",
+		AccessClientID:     "client.access",
+		AccessClientSecret: "shhh",
+	})
+
+	_, err := client.Poll(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "Service Auth policy") {
+		t.Errorf("error should point at the policy, got: %v", err)
+	}
+}
+
 // Non-redirect failures must keep reporting the body, which is where the
 // control plane puts its own error messages.
 func TestPollReportsBodyOnServerError(t *testing.T) {

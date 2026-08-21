@@ -103,6 +103,9 @@ module "loadgen" {
   control_plane_url = module.control_plane.worker_url
   agent_token       = module.control_plane.agent_token
 
+  access_client_id     = module.control_plane.access_client_id
+  access_client_secret = module.control_plane.access_client_secret
+
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
   r2_endpoint          = module.r2.s3_endpoint

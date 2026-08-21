@@ -35,6 +35,14 @@ type Config struct {
 	AgentID         string
 	AgentRegion     string
 
+	// Cloudflare Access service token, for deployments where the control
+	// plane sits behind Access. Optional: both empty means no Access, which
+	// is the case for `wrangler dev` and for unprotected workers.dev routes.
+	// Distinct from AgentToken, which the Worker checks itself - Access
+	// rejects the request at the edge before the Worker ever runs.
+	AccessClientID     string
+	AccessClientSecret string
+
 	// Tuning.
 	MaxWorkers      int
 	MaxIdlePerHost  int
@@ -57,11 +65,14 @@ func LoadConfig() (*Config, error) {
 		AgentToken:      os.Getenv("AGENT_TOKEN"),
 		AgentID:         env.String("AGENT_ID", defaultAgentID()),
 		AgentRegion:     env.String("AGENT_REGION", "unknown"),
-		MaxWorkers:      env.Int("MAX_WORKERS", 2048),
-		MaxIdlePerHost:  env.Int("MAX_IDLE_CONNS_PER_HOST", 4096),
-		PollInterval:    time.Duration(env.Int("POLL_INTERVAL_SECONDS", 5)) * time.Second,
-		MetricsInterval: time.Duration(env.Int("METRICS_INTERVAL_SECONDS", 10)) * time.Second,
-		RequestTimeout:  time.Duration(env.Int("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
+
+		AccessClientID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
+		AccessClientSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
+		MaxWorkers:         env.Int("MAX_WORKERS", 2048),
+		MaxIdlePerHost:     env.Int("MAX_IDLE_CONNS_PER_HOST", 4096),
+		PollInterval:       time.Duration(env.Int("POLL_INTERVAL_SECONDS", 5)) * time.Second,
+		MetricsInterval:    time.Duration(env.Int("METRICS_INTERVAL_SECONDS", 10)) * time.Second,
+		RequestTimeout:     time.Duration(env.Int("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
 	}
 
 	var missing []string
@@ -84,6 +95,13 @@ func LoadConfig() (*Config, error) {
 	}
 	if c.Keyspace <= 0 {
 		return nil, fmt.Errorf("R2_KEYSPACE must be > 0, got %d", c.Keyspace)
+	}
+	// Half a service token authenticates nothing: Access ignores a lone header
+	// and answers with a login redirect, which looks identical to having
+	// configured no token at all. Fail at startup instead, where the cause is
+	// legible, rather than after the fleet is up.
+	if (c.AccessClientID == "") != (c.AccessClientSecret == "") {
+		return nil, fmt.Errorf("CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET must be set together, or both left empty")
 	}
 	return c, nil
 }

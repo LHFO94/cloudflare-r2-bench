@@ -57,3 +57,25 @@ variable "wrangler_command" {
   type        = string
   default     = "npx --yes wrangler@4"
 }
+
+variable "create_access_service_token" {
+  description = <<-EOT
+    Create a Cloudflare Access service token for the load generators.
+
+    Needed whenever the Worker's workers.dev URL is protected by Access, which
+    on some accounts is the default for every Worker. Without it the agents
+    receive a login redirect instead of work and the job never leaves QUEUED.
+
+    Requires the API token to hold Access: Service Tokens (Edit). Set to false
+    if the deploying credential cannot be granted that permission; the agents
+    then need the hostname exempted from Access instead.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "access_service_token_duration" {
+  description = "Lifetime of the Access service token. Must comfortably exceed the longest planned run."
+  type        = string
+  default     = "8760h"
+}

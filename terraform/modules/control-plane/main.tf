@@ -56,6 +56,32 @@ resource "random_password" "admin_token" {
 }
 
 # ---------------------------------------------------------------------------
+# Cloudflare Access service token
+# ---------------------------------------------------------------------------
+# Cloudflare can protect a Worker's workers.dev URL with Access, either per
+# Worker or account-wide ("protect all Workers by default"). That protection is
+# attached to the Worker rather than to a hostname, so it does not appear as an
+# Access application and it reappears on every fresh deployment of this stack.
+#
+# Access rejects unauthenticated requests at the edge with a redirect to its
+# login page, before the Worker runs. A browser follows that and signs in; a
+# load generator cannot. A service token is the supported machine credential.
+#
+# Created unconditionally: it costs nothing when Access is not enabled, and
+# provisioning it only on demand would mean discovering the need after a fleet
+# is already up and failing.
+resource "cloudflare_zero_trust_access_service_token" "agents" {
+  count = var.create_access_service_token ? 1 : 0
+
+  account_id = var.cloudflare_account_id
+  name       = "${var.worker_name}-agents"
+
+  # Must outlast the benchmark run. Rotation is a redeploy, which also rolls
+  # the fleet, so there is no partial-rotation window to worry about.
+  duration = var.access_service_token_duration
+}
+
+# ---------------------------------------------------------------------------
 # Metrics store
 # ---------------------------------------------------------------------------
 resource "cloudflare_d1_database" "metrics" {

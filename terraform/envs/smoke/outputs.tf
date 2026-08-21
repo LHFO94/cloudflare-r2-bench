@@ -29,3 +29,13 @@ output "list_instances_command" {
   description = "Names of the running load generators, to fill in <suffix> in logs_command and ssh_command."
   value       = module.stack.list_instances_command
 }
+
+output "access_service_token_name" {
+  description = "Access service token to include in a Service Auth policy on the Worker's Access application."
+  value       = module.stack.access_service_token_name
+}
+
+output "access_client_id" {
+  description = "Client id of the Access service token."
+  value       = module.stack.access_client_id
+}

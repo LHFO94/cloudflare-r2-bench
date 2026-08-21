@@ -139,6 +139,8 @@ locals {
     keyspace             = var.keyspace
     control_plane_url    = var.control_plane_url
     agent_token          = var.agent_token
+    access_client_id     = var.access_client_id
+    access_client_secret = var.access_client_secret
     region               = var.region
     # Ceiling on goroutines the agent will spin up, independent of what a job
     # asks for. Four times the configured default leaves room to push a single

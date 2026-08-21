@@ -17,14 +17,21 @@ type ControlClient struct {
 	agentID string
 	region  string
 	http    *http.Client
+
+	// Cloudflare Access service token, empty when the control plane is not
+	// behind Access.
+	accessClientID     string
+	accessClientSecret string
 }
 
 func NewControlClient(cfg *Config) *ControlClient {
 	return &ControlClient{
-		baseURL: cfg.ControlPlaneURL,
-		token:   cfg.AgentToken,
-		agentID: cfg.AgentID,
-		region:  cfg.AgentRegion,
+		baseURL:            cfg.ControlPlaneURL,
+		token:              cfg.AgentToken,
+		agentID:            cfg.AgentID,
+		region:             cfg.AgentRegion,
+		accessClientID:     cfg.AccessClientID,
+		accessClientSecret: cfg.AccessClientSecret,
 		http: &http.Client{
 			Timeout: 15 * time.Second,
 			// Never follow redirects. The control plane only ever answers with
@@ -159,6 +166,11 @@ func (c *ControlClient) post(ctx context.Context, path string, body any, out any
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Consumed and stripped by Access at the edge; the Worker never sees them.
+	if c.accessClientID != "" {
+		req.Header.Set("CF-Access-Client-Id", c.accessClientID)
+		req.Header.Set("CF-Access-Client-Secret", c.accessClientSecret)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -173,8 +185,15 @@ func (c *ControlClient) post(ctx context.Context, path string, body any, out any
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		// Name the interception explicitly: the Location host is the single most
 		// useful piece of information for whoever has to unblock the fleet.
-		return fmt.Errorf("%s returned %d redirecting to %q - the control plane is behind an identity proxy that the agent cannot authenticate to; exempt this hostname or give the agent service-token credentials",
-			path, resp.StatusCode, resp.Header.Get("Location"))
+		hint := "exempt this hostname or set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET"
+		if c.accessClientID != "" {
+			// Credentials were sent and still bounced, so the token exists but
+			// no Service Auth policy accepts it. Says so, rather than sending
+			// the operator back to re-check credentials that are fine.
+			hint = "an Access service token was sent but rejected; check that a Service Auth policy on this application includes it"
+		}
+		return fmt.Errorf("%s returned %d redirecting to %q - the control plane is behind an identity proxy: %s",
+			path, resp.StatusCode, resp.Header.Get("Location"), hint)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, truncate(string(data), 200))

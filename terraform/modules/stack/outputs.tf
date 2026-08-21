@@ -53,3 +53,20 @@ output "d1_query_command" {
   description = "Pull raw per-agent samples out of D1 after a run."
   value       = "npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --command 'SELECT * FROM JOB_SPAWN_METRICS ORDER BY CREATED_AT DESC LIMIT 50'"
 }
+
+output "access_service_token_name" {
+  description = <<-EOT
+    Name of the Access service token created for the load generators.
+
+    Access protection on a Worker is attached to the Worker, not to a hostname,
+    so it is recreated with every fresh deployment and the Service Auth policy
+    has to be attached by hand. Use this name to find the token in
+    Zero Trust > Access > Service credentials.
+  EOT
+  value       = module.control_plane.access_service_token_name
+}
+
+output "access_client_id" {
+  description = "Client id of the Access service token, for reproducing an agent request with curl."
+  value       = module.control_plane.access_client_id
+}

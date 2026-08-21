@@ -62,6 +62,24 @@ variable "agent_token" {
   sensitive   = true
 }
 
+variable "access_client_id" {
+  description = <<-EOT
+    Cloudflare Access service token client id, or "" when the control plane is
+    not behind Access. Sent as CF-Access-Client-Id on every control-plane
+    request; Access consumes the header at the edge and the Worker never sees
+    it. Separate from agent_token, which the Worker itself checks.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "access_client_secret" {
+  description = "Cloudflare Access service token client secret. Empty when Access is not in use."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "r2_access_key_id" {
   description = <<-EOT
     R2 S3 access key id, delivered to the VMs through instance metadata.
