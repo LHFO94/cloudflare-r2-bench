@@ -58,12 +58,20 @@ async function api(path, options = {}) {
     }
 
     if (response.status === 401) {
-        // A stale token is as likely as a missing one, so clear it rather than
-        // leaving the operator stuck behind a credential that cannot work.
-        localStorage.removeItem(TOKEN_KEY);
+        // Deliberately does NOT discard the stored token. captureTokenFromUrl
+        // strips ?token= from the address bar, so localStorage holds the only
+        // copy; clearing it here turned any single 401 - a deploy still
+        // propagating, an Access hiccup - into a permanent lockout that a
+        // refresh could not undo. A 401 is not proof the token is wrong, so
+        // report it and let the operator retry.
         throw new Error(
-            "Unauthorized. Run `make dashboard` (or `terraform output -raw dashboard_url`) " +
-            "and open the URL it prints - it includes the admin token.",
+            token
+                ? "Unauthorized. The stored admin token was rejected. If the control plane was " +
+                  "just redeployed, reload the page; the token survives. Otherwise get a current " +
+                  "one with `make dashboard` and open the URL it prints."
+                : "Unauthorized. No admin token stored. Run `make dashboard` (or " +
+                  "`terraform output -raw dashboard_url`) and open the URL it prints - " +
+                  "it includes the token.",
         );
     }
     if (!response.ok) {
