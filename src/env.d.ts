@@ -15,4 +15,9 @@ interface Env {
 	 * run, it just makes the UI's suggestion wrong.
 	 */
 	DEPLOYMENT_AGENTS?: string;
+	/**
+	 * The agents' MAX_WORKERS, as a string. Jobs requesting more are rejected,
+	 * so an operator's chosen worker count is the one that actually runs.
+	 */
+	MAX_WORKERS_PER_AGENT?: string;
 }

@@ -20,6 +20,14 @@ async function post<T>(path: string, body: unknown): Promise<{ status: number, b
 	return { status: response.status, body: await response.json() as T };
 }
 
+async function get<T>(path: string): Promise<{ status: number, body: T }> {
+	const request = new IncomingRequest(`http://example.com${path}`);
+	const ctx = createExecutionContext();
+	const response = await worker.fetch(request, env, ctx);
+	await waitOnExecutionContext(ctx);
+	return { status: response.status, body: await response.json() as T };
+}
+
 async function poll(agentId: string): Promise<AgentPollResponse> {
 	const { body } = await post<AgentPollResponse>("/api/agent/poll", {
 		token: AGENT_TOKEN,
@@ -89,6 +97,26 @@ describe("job start validation", () => {
 	it("allows targetRPS below the agent count when unthrottled", async () => {
 		const { body } = await post<JobStartResponse>("/api/v1/start", {
 			targetRPS: 1, agents: 8, duration: 5, unthrottled: true,
+		});
+		expect(body.status).toBe("success");
+	});
+
+	it("rejects more workers per agent than the agents' MAX_WORKERS", async () => {
+		// The agent would clamp this to MAX_WORKERS and run anyway. That caps
+		// throughput at workers/latency while the job still reports as normal,
+		// so the shortfall reads as the target being slow. Reject it instead.
+		const { body } = await post<JobStartResponse>("/api/v1/start", {
+			targetRPS: 100, agents: 1, duration: 5, workersPerAgent: 999999,
+		});
+		expect(body.status).toBe("error");
+		expect(body.jobId).toBeUndefined();
+		expect(body.message).toContain("MAX_WORKERS");
+	});
+
+	it("accepts a worker count exactly at the cap", async () => {
+		const { body: cfg } = await get<{ maxWorkersPerAgent: number }>("/api/v1/config");
+		const { body } = await post<JobStartResponse>("/api/v1/start", {
+			targetRPS: 100, agents: 1, duration: 5, workersPerAgent: cfg.maxWorkersPerAgent,
 		});
 		expect(body.status).toBe("success");
 	});

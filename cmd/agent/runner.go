@@ -104,8 +104,19 @@ func (r *Runner) Run(ctx context.Context, a Assignment, m *Metrics) {
 	runCtx, cancel := context.WithDeadline(ctx, a.StopAt)
 	defer cancel()
 
+	// The control plane validates Workers against this same ceiling, so a
+	// clamp here means the two disagree - usually a fleet running an older
+	// MAX_WORKERS than the Worker advertises. Say so loudly: silently running
+	// fewer workers than requested caps throughput at workers/latency and
+	// reads as the target being slow rather than the harness being misconfigured.
 	workers := a.Workers
-	if workers <= 0 || workers > r.cfg.MaxWorkers {
+	if workers <= 0 {
+		log.Printf("assignment requested %d workers; using MAX_WORKERS=%d", a.Workers, r.cfg.MaxWorkers)
+		workers = r.cfg.MaxWorkers
+	} else if workers > r.cfg.MaxWorkers {
+		log.Printf("WARNING: assignment requested %d workers but MAX_WORKERS=%d; running %d. "+
+			"Throughput will be capped accordingly. Raise max_workers_per_agent in Terraform and roll the fleet.",
+			workers, r.cfg.MaxWorkers, r.cfg.MaxWorkers)
 		workers = r.cfg.MaxWorkers
 	}
 

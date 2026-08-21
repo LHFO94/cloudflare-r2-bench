@@ -68,9 +68,10 @@ variable "machine_type" {
   default = "n2-standard-8"
 }
 
-variable "workers_per_agent" {
-  type    = number
-  default = 512
+variable "max_workers_per_agent" {
+  description = "Hard ceiling on in-flight requests per agent. See the loadgen-pool variable of the same name."
+  type        = number
+  default     = 4096
 }
 
 variable "r2_access_key_id" {

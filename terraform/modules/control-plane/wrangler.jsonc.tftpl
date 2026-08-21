@@ -21,7 +21,11 @@
 		"R2_ACCOUNT_ID": "${r2_account_id}",
 		// How many load generators Terraform provisioned. The UI reads this so
 		// it cannot default to asking for more agents than exist.
-		"DEPLOYMENT_AGENTS": "${agent_count}"
+		"DEPLOYMENT_AGENTS": "${agent_count}",
+		// The agents' MAX_WORKERS. The UI caps its input at this and the
+		// control plane rejects jobs above it, so the number an operator
+		// types is the number that actually runs.
+		"MAX_WORKERS_PER_AGENT": "${max_workers_per_agent}"
 	},
 	"triggers": {
 		"crons": ["* * * * *"]

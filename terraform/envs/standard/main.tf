@@ -47,9 +47,9 @@ module "stack" {
   gcp_region     = var.gcp_region
   gcp_zones      = var.gcp_zones
 
-  agent_count       = 8
-  machine_type      = "n2-standard-8"
-  workers_per_agent = 512
+  agent_count           = 8
+  machine_type          = "n2-standard-8"
+  max_workers_per_agent = 4096
 
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key

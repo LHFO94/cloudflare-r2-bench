@@ -118,12 +118,13 @@ resource "local_file" "wrangler_config" {
   file_permission = "0644"
 
   content = templatefile("${path.module}/wrangler.jsonc.tftpl", {
-    worker_name        = var.worker_name
-    compatibility_date = local.compatibility_date
-    r2_account_id      = var.r2_account_id
-    d1_database_name   = cloudflare_d1_database.metrics.name
-    d1_database_id     = cloudflare_d1_database.metrics.uuid
-    agent_count        = var.agent_count
+    worker_name           = var.worker_name
+    compatibility_date    = local.compatibility_date
+    r2_account_id         = var.r2_account_id
+    d1_database_name      = cloudflare_d1_database.metrics.name
+    d1_database_id        = cloudflare_d1_database.metrics.uuid
+    agent_count           = var.agent_count
+    max_workers_per_agent = var.max_workers_per_agent
   })
 }
 

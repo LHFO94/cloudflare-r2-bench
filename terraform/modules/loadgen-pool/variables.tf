@@ -129,10 +129,24 @@ variable "keyspace" {
   default     = 40000
 }
 
-variable "workers_per_agent" {
-  description = "Default in-flight request count per agent. The control plane overrides this per job."
+variable "max_workers_per_agent" {
+  description = <<-EOT
+    Hard ceiling on in-flight requests per agent, written to the VM as
+    MAX_WORKERS. Per-job worker counts come from the control plane and are
+    validated against this; the agent refuses to exceed it.
+
+    Set this generously. It exists to stop a mistyped job from exhausting the
+    VM, not to size a run: raising it rolls the whole fleet, while the per-job
+    value is just a form field. A VM has ~55k ephemeral ports and 1M file
+    descriptors, so even a few thousand workers is far from any real limit.
+  EOT
   type        = number
-  default     = 512
+  default     = 4096
+
+  validation {
+    condition     = var.max_workers_per_agent > 0
+    error_message = "max_workers_per_agent must be positive."
+  }
 }
 
 variable "poll_interval_seconds" {

@@ -145,7 +145,7 @@ locals {
     # Ceiling on goroutines the agent will spin up, independent of what a job
     # asks for. Four times the configured default leaves room to push a single
     # agent harder without rebuilding the fleet, while still bounding memory.
-    max_workers              = var.workers_per_agent * 4
+    max_workers              = var.max_workers_per_agent
     poll_interval_seconds    = var.poll_interval_seconds
     metrics_interval_seconds = var.metrics_interval_seconds
   })

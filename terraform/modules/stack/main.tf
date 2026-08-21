@@ -77,6 +77,7 @@ module "control_plane" {
   workers_dev_subdomain = var.workers_dev_subdomain
   d1_location_hint      = var.r2_location
   agent_count           = var.agent_count
+  max_workers_per_agent = var.max_workers_per_agent
   r2_account_id         = var.cloudflare_account_id
   repo_root             = var.repo_root
 }
@@ -96,10 +97,10 @@ module "loadgen" {
   name_prefix = local.name
   labels      = merge({ deployment = var.deployment_id }, var.labels)
 
-  agent_count       = var.agent_count
-  machine_type      = var.machine_type
-  workers_per_agent = var.workers_per_agent
-  agent_binary_path = "${var.repo_root}/dist/agent-linux-amd64"
+  agent_count           = var.agent_count
+  machine_type          = var.machine_type
+  max_workers_per_agent = var.max_workers_per_agent
+  agent_binary_path     = "${var.repo_root}/dist/agent-linux-amd64"
 
   control_plane_url = module.control_plane.worker_url
   agent_token       = module.control_plane.agent_token

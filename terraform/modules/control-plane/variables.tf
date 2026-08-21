@@ -84,3 +84,8 @@ variable "agent_count" {
   description = "Number of load generators this deployment provisions. Surfaced to the UI so it cannot suggest a fan-out larger than the fleet."
   type        = number
 }
+
+variable "max_workers_per_agent" {
+  description = "Agents' MAX_WORKERS. Surfaced to the UI and enforced at job start so the requested worker count is the one that runs."
+  type        = number
+}

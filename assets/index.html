@@ -48,7 +48,12 @@
                 <div class="field">
                     <label for="workersPerAgent">Workers per agent</label>
                     <input id="workersPerAgent" type="number" value="64" min="1" step="1" required />
-                    <p class="muted">In-flight requests per VM. Pacing is done by the rate limiter; this only has to be high enough not to be the bottleneck.</p>
+                    <p class="muted">
+                        In-flight requests per VM, and the real throughput limit: an agent can
+                        never exceed <em>workers / latency</em>, because each worker waits for its
+                        GET to return before issuing the next.
+                    </p>
+                    <p class="muted" id="workerCapHint"></p>
                 </div>
 
                 <div class="field">
@@ -85,6 +90,8 @@
         const unthrottled = document.getElementById("unthrottled");
         const perAgentHint = document.getElementById("perAgentHint");
         const presetHint = document.getElementById("presetHint");
+        const workersPerAgent = document.getElementById("workersPerAgent");
+        const workerCapHint = document.getElementById("workerCapHint");
 
         // Defaults used to be the standard run's, which is wrong on any smaller
         // deployment: asking for 8 agents when Terraform provisioned 1 leaves
@@ -108,7 +115,7 @@
             if (!p) return;
             targetRPS.value = p.targetRPS;
             agents.value = p.agents;
-            document.getElementById("workersPerAgent").value = p.workersPerAgent;
+            workersPerAgent.value = p.workersPerAgent;
             document.getElementById("duration").value = p.duration;
             document.getElementById("startDelaySeconds").value = p.startDelaySeconds;
             unthrottled.checked = p.unthrottled;
@@ -127,6 +134,16 @@
         (async function loadDeploymentConfig() {
             try {
                 const cfg = await api("/api/v1/config");
+                // Mirror the agents' MAX_WORKERS onto the input. Without this the
+                // form accepts any number and the agent quietly clamps, so the run
+                // uses fewer workers than requested and the shortfall looks like a
+                // throughput ceiling instead of a setting.
+                if (cfg.maxWorkersPerAgent) {
+                    workersPerAgent.max = cfg.maxWorkersPerAgent;
+                    workerCapHint.textContent =
+                        `Maximum ${cfg.maxWorkersPerAgent.toLocaleString()} on this deployment. ` +
+                        `Raising it means changing max_workers_per_agent in Terraform and rolling the fleet.`;
+                }
                 provisionedAgents = cfg.provisionedAgents;
                 if (!provisionedAgents) return;
                 applyPreset(provisionedAgents === 1 ? "smoke" : "standard");

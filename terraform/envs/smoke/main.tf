@@ -53,8 +53,8 @@ module "stack" {
   agent_count = 1
   # Two vCPU is plenty for a correctness check and keeps the smoke run off the
   # project's N2 quota headroom.
-  machine_type      = "n2-standard-2"
-  workers_per_agent = 64
+  machine_type          = "n2-standard-2"
+  max_workers_per_agent = 2048
 
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key

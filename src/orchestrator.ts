@@ -81,9 +81,29 @@ export async function orchestrator_route(request: Request, env: Env, _ctx: Execu
  * rate while otherwise looking healthy. Surfacing the real number is the
  * cheapest way to stop that happening by accident.
  */
-function deployment_config(env: Env): { provisionedAgents: number | null } {
-    const raw = Number(env.DEPLOYMENT_AGENTS);
-    return { provisionedAgents: Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null };
+function deployment_config(env: Env): { provisionedAgents: number | null, maxWorkersPerAgent: number | null } {
+    return {
+        provisionedAgents: positive_var(env.DEPLOYMENT_AGENTS),
+        maxWorkersPerAgent: max_workers_per_agent(env),
+    };
+}
+
+/** Worker vars are strings; treat anything not a positive number as absent. */
+function positive_var(raw: string | undefined): number | null {
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+/**
+ * The agents' MAX_WORKERS, or null if this deployment did not declare one.
+ *
+ * The agent clamps any assignment to its own MAX_WORKERS. When that clamp
+ * fires the run silently uses fewer workers than requested, which reads as a
+ * throughput ceiling in the results rather than as a configuration mistake -
+ * so the control plane rejects such jobs up front instead.
+ */
+function max_workers_per_agent(env: Env): number | null {
+    return positive_var(env.MAX_WORKERS_PER_AGENT);
 }
 
 /**
@@ -139,6 +159,13 @@ async function start_job(request: Request, env: Env): Promise<JobStartResponse> 
     }
     if (!unthrottled && targetRPS < agents) {
         return invalid("targetRPS must be at least the number of agents so every agent gets at least 1 RPS");
+    }
+    const workerCap = max_workers_per_agent(env);
+    if (workerCap !== null && workersPerAgent > workerCap) {
+        return invalid(
+            `workersPerAgent must be at most ${workerCap}, the agents' MAX_WORKERS. ` +
+            `Raising it means changing max_workers_per_agent in Terraform and rolling the fleet.`,
+        );
     }
 
     // Only one job may be active at a time: agents poll for "the" open job and
