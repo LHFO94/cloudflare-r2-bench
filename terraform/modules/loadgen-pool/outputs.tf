@@ -24,6 +24,17 @@ output "ssh_command" {
 }
 
 output "logs_command" {
-  description = "Tail agent logs across the fleet without SSHing into saturated VMs."
-  value       = "gcloud logging read 'resource.type=gce_instance AND logName:syslog AND textPayload:r2agent' --project=${var.project_id} --limit=100 --freshness=10m"
+  description = <<-EOT
+    Read agent output from the serial console. Cloud Logging is not available:
+    shipping there needs roles/logging.logWriter on the agent service account,
+    and granting it needs project IAM admin, which we do not have. The serial
+    console needs only compute permissions and survives a saturated VM better
+    than an SSH session does.
+  EOT
+  value       = "gcloud compute instances get-serial-port-output ${google_compute_region_instance_group_manager.agents.base_instance_name}-<suffix> --project=${var.project_id} --zone=${var.zones[0]} | grep r2agent"
+}
+
+output "list_instances_command" {
+  description = "Names of the running load generators, to fill in <suffix> above."
+  value       = "gcloud compute instance-groups list-instances ${google_compute_region_instance_group_manager.agents.name} --region=${var.region} --project=${var.project_id}"
 }

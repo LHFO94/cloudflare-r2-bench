@@ -74,27 +74,16 @@ resource "google_service_account" "agent" {
   display_name = "R2 benchmark load generator"
 }
 
-# Read the R2 credentials at boot. Scoped to the one secret, not project-wide.
-resource "google_secret_manager_secret_iam_member" "agent_reads_r2_credentials" {
-  project   = var.project_id
-  secret_id = var.r2_credentials_secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.agent.email}"
-}
-
-# Serial-console and journald output is the only debugging channel once a run is
-# under way; SSHing into a saturated VM is unreliable.
-resource "google_project_iam_member" "agent_logging" {
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.agent.email}"
-}
-
-resource "google_project_iam_member" "agent_metrics" {
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.agent.email}"
-}
+# The agents are intentionally granted nothing at project level.
+#
+# roles/logging.logWriter and roles/monitoring.metricWriter would let them ship
+# to Cloud Logging, but granting either needs resourcemanager.projectIamAdmin,
+# which the SE groups do not hold on the target project. Agent output therefore
+# stays on the VM: journald, plus the serial console, both reachable with the
+# compute permissions we do have. See the logs_command output.
+#
+# Bucket-level access to the artifact bucket is granted separately below;
+# storage.admin covers that, so it needs no project-level role.
 
 # ---------------------------------------------------------------------------
 # Agent artifact
@@ -140,17 +129,17 @@ resource "google_storage_bucket_iam_member" "agent_reads_artifacts" {
 # ---------------------------------------------------------------------------
 locals {
   startup_script = templatefile("${path.module}/startup.sh.tftpl", {
-    project_id               = var.project_id
-    artifact_bucket          = google_storage_bucket.artifacts.name
-    artifact_object          = google_storage_bucket_object.agent.name
-    r2_credentials_secret_id = var.r2_credentials_secret_id
-    r2_endpoint              = var.r2_endpoint
-    bucket_prefix            = var.bucket_prefix
-    bucket_count             = var.bucket_count
-    keyspace                 = var.keyspace
-    control_plane_url        = var.control_plane_url
-    agent_token              = var.agent_token
-    region                   = var.region
+    artifact_bucket      = google_storage_bucket.artifacts.name
+    artifact_object      = google_storage_bucket_object.agent.name
+    r2_access_key_id     = var.r2_access_key_id
+    r2_secret_access_key = var.r2_secret_access_key
+    r2_endpoint          = var.r2_endpoint
+    bucket_prefix        = var.bucket_prefix
+    bucket_count         = var.bucket_count
+    keyspace             = var.keyspace
+    control_plane_url    = var.control_plane_url
+    agent_token          = var.agent_token
+    region               = var.region
     # Ceiling on goroutines the agent will spin up, independent of what a job
     # asks for. Four times the configured default leaves room to push a single
     # agent harder without rebuilding the fleet, while still bounding memory.
@@ -206,8 +195,8 @@ resource "google_compute_instance_template" "agent" {
 
   metadata = {
     enable-oslogin = "TRUE"
-    # Serial output is the fallback when the agent fails before the network or
-    # SSH is usable.
+    # With no Cloud Logging grant, the serial console is the only way to see a
+    # boot failure that happens before SSH is usable.
     serial-port-logging-enable = "TRUE"
   }
 
@@ -256,12 +245,11 @@ resource "google_compute_region_instance_group_manager" "agents" {
   }
 
   # Block apply until every VM exists, so the operator does not start a job
-  # against a half-provisioned fleet and get a misleading result.
+  # against a half-provisioned fleet and get a misleading result. Note this
+  # waits for RUNNING, not for the startup script to finish; confirm the agent
+  # count on the watch page before trusting a run.
   wait_for_instances        = true
   wait_for_instances_status = "STABLE"
 
-  depends_on = [
-    google_secret_manager_secret_iam_member.agent_reads_r2_credentials,
-    google_storage_bucket_iam_member.agent_reads_artifacts,
-  ]
+  depends_on = [google_storage_bucket_iam_member.agent_reads_artifacts]
 }

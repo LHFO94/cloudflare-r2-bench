@@ -62,16 +62,28 @@ variable "agent_token" {
   sensitive   = true
 }
 
-variable "r2_credentials_secret_id" {
+variable "r2_access_key_id" {
   description = <<-EOT
-    Name of a Secret Manager secret holding the R2 S3 credentials as JSON:
-      {"access_key_id": "...", "secret_access_key": "..."}
+    R2 S3 access key id, delivered to the VMs through instance metadata.
 
-    Created out of band (see the README) so that a live R2 write credential
-    never enters Terraform state or a VM metadata field. The VMs read it at boot
-    using their own service account.
+    Secret Manager would be the better home for this, but it needs
+    roles/secretmanager.admin which is not granted to the SE groups on the
+    target project. Metadata is what the available permissions allow.
+
+    Consequences to accept, or design around by scoping the R2 token to the
+    benchmark buckets only:
+      - readable by anyone with compute.instances.get on the project
+      - written to Terraform state, which has no remote backend here
+      - written to /etc/r2agent/agent.env on each VM (mode 0600)
   EOT
   type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = "R2 S3 secret access key. Same exposure caveats as r2_access_key_id."
+  type        = string
+  sensitive   = true
 }
 
 variable "r2_endpoint" {

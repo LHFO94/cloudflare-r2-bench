@@ -73,9 +73,23 @@ variable "workers_per_agent" {
   default = 512
 }
 
-variable "r2_credentials_secret_id" {
-  description = "Secret Manager secret holding the R2 S3 credentials. Created out of band; see the README."
+variable "r2_access_key_id" {
+  description = <<-EOT
+    R2 S3 access key id. Reaches the VMs through instance metadata, because
+    Secret Manager needs roles/secretmanager.admin which the SE groups do not
+    hold on the target project.
+
+    Supply it via TF_VAR_r2_access_key_id rather than a tfvars file, and scope
+    the R2 token to the benchmark buckets so that metadata exposure is bounded.
+  EOT
   type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = "R2 S3 secret access key. Supply via TF_VAR_r2_secret_access_key."
+  type        = string
+  sensitive   = true
 }
 
 variable "labels" {

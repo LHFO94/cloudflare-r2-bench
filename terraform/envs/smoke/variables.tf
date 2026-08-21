@@ -28,7 +28,14 @@ variable "gcp_zones" {
   default     = ["us-west2-a"]
 }
 
-variable "r2_credentials_secret_id" {
-  description = "Secret Manager secret holding the R2 S3 credentials. Created out of band; see the README."
+variable "r2_access_key_id" {
+  description = "R2 S3 access key id. Set via TF_VAR_r2_access_key_id; do not put it in tfvars."
   type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = "R2 S3 secret access key. Set via TF_VAR_r2_secret_access_key; do not put it in tfvars."
+  type        = string
+  sensitive   = true
 }

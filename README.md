@@ -107,44 +107,52 @@ export CLOUDFLARE_API_TOKEN='...'
 
 Used by both Terraform and wrangler. Never put it in a tfvars file.
 
-### 2. R2 S3 credentials, in Secret Manager
+### 2. R2 S3 credentials
 
-Create an R2 API token (R2 > Manage API tokens > **Object Read & Write**). It
-returns an Access Key ID and a Secret Access Key.
+Create an R2 API token under R2 > Manage API tokens. **Scope it to the
+`r2bench-*` buckets, not the whole account.**
 
-These deliberately do not pass through Terraform. Terraform state is a plaintext
-file that gets copied around; a live R2 write credential should not be in it,
-nor in an instance metadata field readable by anyone who can describe the VM.
-The VMs read the secret at boot with their own service account.
+That scoping is the actual security control here, so it is worth doing properly.
+The credential reaches the VMs through **instance metadata**, which means it is:
+
+- readable by anyone with `compute.instances.get` on the project — on
+  `globalse-198312` that is the `se@`, `cse@`, `im@` and `sirtsquad@` groups
+- recorded in `terraform.tfstate`, which has no remote backend configured
+- written to `/etc/r2agent/agent.env` on each VM at mode 0600
+
+Secret Manager would avoid all three, but granting a VM read access needs
+`roles/secretmanager.admin`, which on this project is held only by
+`sxpadmin@cloudflare.com`. Metadata is what the available permissions allow. A
+bucket-scoped token makes the worst case "someone deletes disposable benchmark
+fixtures" rather than "someone deletes production objects".
+
+Pass them as environment variables, never in a tfvars file:
 
 ```bash
-gcloud config set account luuk@cloudflare.com
-
-printf '{"access_key_id":"%s","secret_access_key":"%s"}' "$AKID" "$SECRET" \
-  | gcloud secrets create r2bench-credentials \
-      --project=globalse-198312 \
-      --replication-policy=automatic \
-      --data-file=-
+export TF_VAR_r2_access_key_id='...'
+export TF_VAR_r2_secret_access_key='...'
 ```
 
-Rotating later:
-
-```bash
-printf '{"access_key_id":"%s","secret_access_key":"%s"}' "$AKID" "$SECRET" \
-  | gcloud secrets versions add r2bench-credentials --data-file=-
-```
-
-Agents read `latest` at boot, so a rotation takes effect on the next VM replace.
+Rotate the token after a run.
 
 ### 3. Enable GCP APIs
 
 ```bash
-gcloud services enable compute.googleapis.com secretmanager.googleapis.com \
-  storage.googleapis.com --project=globalse-198312
+gcloud config set account luuk@cloudflare.com   # not the personal account
+
+gcloud services enable compute.googleapis.com storage.googleapis.com \
+  --project=globalse-198312
 ```
 
 If you lack `serviceusage.services.enable`, ask a project owner; this is the one
 step Terraform cannot do for you.
+
+### Permissions this stack assumes
+
+Terraform needs `compute.admin`, `storage.admin` and `iam.serviceAccountAdmin`,
+all of which the SE groups hold on `globalse-198312`. It deliberately creates
+**no project-level IAM bindings**, because `resourcemanager.projectIamAdmin` is
+not available — see [Watching a run](#watching-a-run) for what that costs.
 
 ---
 
@@ -239,10 +247,27 @@ and a preemption mid-run would invalidate the measurement anyway.
 
 ### Watching a run
 
+The watch page is the primary view. For the VMs themselves:
+
 ```bash
-terraform output -raw logs_command        # fleet-wide agent logs
-terraform output -raw ssh_command         # IAP tunnel into one VM
+terraform output -raw list_instances_command   # instance names
+terraform output -raw logs_command             # serial console for one VM
+terraform output -raw ssh_command              # IAP tunnel into one VM
 ```
+
+Then substitute a real instance name for `<suffix>`.
+
+**There is no fleet-wide log view.** Shipping to Cloud Logging needs
+`roles/logging.logWriter` on the agent service account, and granting any
+project-level role needs `resourcemanager.projectIamAdmin`, which on
+`globalse-198312` belongs to `jeffh@cloudflare.com` alone. So the agents are
+granted nothing at project level and their output stays local: serial console,
+or `journalctl -u r2agent -f` over SSH.
+
+In practice this matters less than it sounds. The metrics you actually care
+about are pushed to D1 and rendered on the watch page; the logs are only for
+diagnosing a VM that failed to boot, and the serial console is better for that
+anyway because it captures failures from before SSH is up.
 
 Port 22 is reachable only from Google's IAP range, even though the VMs carry
 external IPs.

@@ -45,6 +45,10 @@ output "logs_command" {
   value = module.loadgen.logs_command
 }
 
+output "list_instances_command" {
+  value = module.loadgen.list_instances_command
+}
+
 output "d1_query_command" {
   description = "Pull raw per-agent samples out of D1 after a run."
   value       = "npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --command 'SELECT * FROM JOB_SPAWN_METRICS ORDER BY CREATED_AT DESC LIMIT 50'"

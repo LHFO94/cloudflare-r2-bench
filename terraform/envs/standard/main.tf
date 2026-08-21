@@ -51,7 +51,8 @@ module "stack" {
   machine_type      = "n2-standard-8"
   workers_per_agent = 512
 
-  r2_credentials_secret_id = var.r2_credentials_secret_id
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
 
   labels = {
     env = "standard"

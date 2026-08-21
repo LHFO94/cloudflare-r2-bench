@@ -24,3 +24,8 @@ output "ssh_command" {
 output "logs_command" {
   value = module.stack.logs_command
 }
+
+output "list_instances_command" {
+  description = "Names of the running load generators, to fill in <suffix> in logs_command and ssh_command."
+  value       = module.stack.list_instances_command
+}

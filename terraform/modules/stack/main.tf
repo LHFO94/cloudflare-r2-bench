@@ -103,11 +103,12 @@ module "loadgen" {
   control_plane_url = module.control_plane.worker_url
   agent_token       = module.control_plane.agent_token
 
-  r2_credentials_secret_id = var.r2_credentials_secret_id
-  r2_endpoint              = module.r2.s3_endpoint
-  bucket_prefix            = module.r2.bucket_prefix
-  bucket_count             = module.r2.bucket_count
-  keyspace                 = var.keyspace
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
+  r2_endpoint          = module.r2.s3_endpoint
+  bucket_prefix        = module.r2.bucket_prefix
+  bucket_count         = module.r2.bucket_count
+  keyspace             = var.keyspace
 
   depends_on = [
     terraform_data.region_pairing_check,
