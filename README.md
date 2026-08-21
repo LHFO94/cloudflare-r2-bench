@@ -157,17 +157,20 @@ The credential reaches the VMs through **instance metadata**, which means it is:
 - recorded in `terraform.tfstate`, which has no remote backend configured
 - written to `/etc/r2agent/agent.env` on each VM at mode 0600
 
+**There is no secret store in this design, in GCP or anywhere else.**
 Secret Manager would avoid all three, but granting a VM read access needs
 `roles/secretmanager.admin`, which on this project is held only by
-`sxpadmin@cloudflare.com`. Metadata is what the available permissions allow. A
-bucket-scoped token makes the worst case "someone deletes disposable benchmark
-fixtures" rather than "someone deletes production objects".
+`sxpadmin@cloudflare.com`. Metadata is what the available permissions allow, so
+the scoping is doing the work a secret store otherwise would: a bucket-scoped
+token makes the worst case "someone deletes disposable benchmark fixtures"
+rather than "someone deletes production objects".
 
-Pass them as environment variables, never in a tfvars file:
+Put them in `.env`, as `TF_VAR_` variables that Terraform picks up from the
+environment. No quotes, no spaces around the `=`:
 
-```bash
-export TF_VAR_r2_access_key_id='...'
-export TF_VAR_r2_secret_access_key='...'
+```
+TF_VAR_r2_access_key_id=...
+TF_VAR_r2_secret_access_key=...
 ```
 
 Rotate the token after a run.
@@ -178,13 +181,11 @@ R2's token UI can only scope to buckets that already exist, so the buckets have
 to be created before the token. Apply the R2 module on its own, then come back:
 
 ```bash
-cd terraform/envs/smoke
-terraform init
-
-# Placeholders: the R2 module does not use them, but Terraform requires a value.
-export TF_VAR_r2_access_key_id='pending' TF_VAR_r2_secret_access_key='pending'
-terraform apply -target=module.stack.module.r2
+make tf-apply-r2
 ```
+
+That targets the R2 module alone. Leave the two `TF_VAR_r2_*` lines in `.env`
+blank for this step — the R2 module does not use them.
 
 Now the `r2bench-<deployment_id>-NN` buckets exist. Create the scoped token
 against them, re-export the real values, and continue with the full apply.

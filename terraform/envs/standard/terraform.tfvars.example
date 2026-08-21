@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars and fill in. No secrets belong in this file:
-# the Cloudflare API token comes from $CLOUDFLARE_API_TOKEN, and the R2
-# credentials live in Secret Manager.
+# every credential comes from .env in the repo root, which the Makefile
+# includes and exports. See .env.example.
 
 # Short, unique, and never reused for a different R2 location. R2 pins a
 # bucket name to its location permanently, so a reused id silently keeps the
@@ -21,8 +21,12 @@ gcp_region = "us-west2"
 gcp_zones  = ["us-west2-a", "us-west2-b", "us-west2-c"]
 
 # R2 credentials are NOT set here. They would be committed, and tfvars is not
-# encrypted. Export them instead:
-#   export TF_VAR_r2_access_key_id='...'
-#   export TF_VAR_r2_secret_access_key='...'
-# They still reach Terraform state and VM instance metadata, so scope the R2
-# token to the r2bench-* buckets and rotate it after the run.
+# encrypted. Put them in .env instead, unquoted:
+#   TF_VAR_r2_access_key_id=...
+#   TF_VAR_r2_secret_access_key=...
+# There is no secret store in this design. Secret Manager would keep the
+# credential off the VMs and out of Terraform state, but granting a VM read
+# access needs roles/secretmanager.admin, which the SE groups do not hold on
+# this project. So the credential does reach Terraform state and VM instance
+# metadata: scope the R2 token to the r2bench-* buckets and rotate it after
+# the run.
