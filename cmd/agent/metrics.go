@@ -26,7 +26,25 @@ type Metrics struct {
 	status4x atomic.Uint64
 	status5x atomic.Uint64
 	timeouts atomic.Uint64
-	buckets  [numBuckets]atomic.Uint64
+	// Connections the transport had to dial rather than reuse. A healthy run
+	// dials once during warmup and then reuses: a mid-run spike means the pool
+	// is being drained and every fresh request is paying a TCP and TLS
+	// handshake, which shows up as a throughput dip with a multi-second tail
+	// but no errors. Without this the only symptom is the dip itself, which is
+	// indistinguishable from the target slowing down.
+	newConns    atomic.Uint64
+	reusedConns atomic.Uint64
+	buckets     [numBuckets]atomic.Uint64
+}
+
+// ObserveConn records whether a request got an existing connection or dialled
+// a new one. Called from the httptrace GotConn hook.
+func (m *Metrics) ObserveConn(reused bool) {
+	if reused {
+		m.reusedConns.Add(1)
+		return
+	}
+	m.newConns.Add(1)
 }
 
 func NewMetrics() *Metrics { return &Metrics{} }
@@ -60,27 +78,31 @@ func (m *Metrics) ObserveError(latencyMicros uint64, timeout bool) {
 
 // Snapshot is a point-in-time read of the cumulative counters.
 type Snapshot struct {
-	Count    uint64
-	Errors   uint64
-	Bytes    uint64
-	LatSum   uint64
-	StatusOK uint64
-	Status4x uint64
-	Status5x uint64
-	Timeouts uint64
-	Buckets  [numBuckets]uint64
+	Count       uint64
+	Errors      uint64
+	Bytes       uint64
+	LatSum      uint64
+	StatusOK    uint64
+	Status4x    uint64
+	Status5x    uint64
+	Timeouts    uint64
+	NewConns    uint64
+	ReusedConns uint64
+	Buckets     [numBuckets]uint64
 }
 
 func (m *Metrics) Snapshot() Snapshot {
 	s := Snapshot{
-		Count:    m.count.Load(),
-		Errors:   m.errors.Load(),
-		Bytes:    m.bytes.Load(),
-		LatSum:   m.latSum.Load(),
-		StatusOK: m.statusOK.Load(),
-		Status4x: m.status4x.Load(),
-		Status5x: m.status5x.Load(),
-		Timeouts: m.timeouts.Load(),
+		Count:       m.count.Load(),
+		Errors:      m.errors.Load(),
+		Bytes:       m.bytes.Load(),
+		LatSum:      m.latSum.Load(),
+		StatusOK:    m.statusOK.Load(),
+		Status4x:    m.status4x.Load(),
+		Status5x:    m.status5x.Load(),
+		Timeouts:    m.timeouts.Load(),
+		NewConns:    m.newConns.Load(),
+		ReusedConns: m.reusedConns.Load(),
 	}
 	for i := range m.buckets {
 		s.Buckets[i] = m.buckets[i].Load()
@@ -92,14 +114,16 @@ func (m *Metrics) Snapshot() Snapshot {
 // reporting. Counters are monotonic so this is always non-negative.
 func (s Snapshot) Sub(prev Snapshot) Snapshot {
 	d := Snapshot{
-		Count:    s.Count - prev.Count,
-		Errors:   s.Errors - prev.Errors,
-		Bytes:    s.Bytes - prev.Bytes,
-		LatSum:   s.LatSum - prev.LatSum,
-		StatusOK: s.StatusOK - prev.StatusOK,
-		Status4x: s.Status4x - prev.Status4x,
-		Status5x: s.Status5x - prev.Status5x,
-		Timeouts: s.Timeouts - prev.Timeouts,
+		Count:       s.Count - prev.Count,
+		Errors:      s.Errors - prev.Errors,
+		Bytes:       s.Bytes - prev.Bytes,
+		LatSum:      s.LatSum - prev.LatSum,
+		StatusOK:    s.StatusOK - prev.StatusOK,
+		Status4x:    s.Status4x - prev.Status4x,
+		Status5x:    s.Status5x - prev.Status5x,
+		Timeouts:    s.Timeouts - prev.Timeouts,
+		NewConns:    s.NewConns - prev.NewConns,
+		ReusedConns: s.ReusedConns - prev.ReusedConns,
 	}
 	for i := range s.Buckets {
 		d.Buckets[i] = s.Buckets[i] - prev.Buckets[i]

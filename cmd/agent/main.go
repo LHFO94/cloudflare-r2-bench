@@ -85,14 +85,29 @@ func execute(ctx context.Context, cfg *Config, runner *Runner, control *ControlC
 	// Warm up inside the start delay so that TLS handshakes and connection
 	// setup are not counted as latency, and are not competing for CPU once
 	// load begins.
+	//
+	// One connection per worker, with no cap. A cap does not reduce the
+	// handshakes, it defers them: any worker without a pooled connection dials
+	// on its first request instead, so the whole deficit lands in the first
+	// seconds of the timed run at once. A 512-cap against 2048 workers turned
+	// tick 0 into 2766 RPS with a 4.2s p99 while the other 1536 connections
+	// were established.
 	warmup := assignment.Workers
-	if warmup > 512 {
-		warmup = 512
-	}
 	if warmup > 0 {
 		warmStart := time.Now()
 		runner.Warmup(runCtx, warmup)
-		log.Printf("warmed %d connections in %s", warmup, time.Since(warmStart).Round(time.Millisecond))
+		elapsed := time.Since(warmStart)
+		log.Printf("warmed %d connections in %s", warmup, elapsed.Round(time.Millisecond))
+
+		// Warmup runs inside the start delay. Overrunning it means the run
+		// begins with a partial pool and the remainder is dialled under load,
+		// which is the exact failure the warmup exists to prevent - so say so
+		// rather than leaving a slow first tick to be misread as the target.
+		if remaining := time.Until(time.UnixMilli(resp.StartAtEpochMs)); remaining < 0 {
+			log.Printf("WARNING: warmup took %s and overran the synchronised start by %s. "+
+				"Increase the job's start delay so the pool is complete before load begins.",
+				elapsed.Round(time.Millisecond), (-remaining).Round(time.Millisecond))
+		}
 	}
 
 	// Hold until the shared start instant. Every agent on the job is given the
@@ -169,8 +184,12 @@ func reportLoop(ctx context.Context, control *ControlClient, a Assignment, m *Me
 				log.Printf("metrics report tick %d failed: %v", tick, err)
 			}
 		} else {
-			log.Printf("tick %d: %.0f RPS, mean %.1fms, p95 %.1fms, p99 %.1fms, errors %d",
-				tick, report.RPS, report.Latency, report.P95, report.P99, delta.Errors)
+			// newConns is the diagnostic: after warmup it should be ~0. A spike
+			// alongside a throughput dip means the pool was drained and the
+			// interval was spent on handshakes, not on the target being slow.
+			log.Printf("tick %d: %.0f RPS, mean %.1fms, p95 %.1fms, p99 %.1fms, errors %d, conns %d new / %d reused",
+				tick, report.RPS, report.Latency, report.P95, report.P99, delta.Errors,
+				delta.NewConns, delta.ReusedConns)
 		}
 
 		prev = cur

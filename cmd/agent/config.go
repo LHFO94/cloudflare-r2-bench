@@ -46,6 +46,7 @@ type Config struct {
 	// Tuning.
 	MaxWorkers      int
 	MaxIdlePerHost  int
+	IdleConnTimeout time.Duration
 	PollInterval    time.Duration
 	MetricsInterval time.Duration
 	RequestTimeout  time.Duration
@@ -70,9 +71,11 @@ func LoadConfig() (*Config, error) {
 		AccessClientSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
 		MaxWorkers:         env.Int("MAX_WORKERS", 2048),
 		MaxIdlePerHost:     env.Int("MAX_IDLE_CONNS_PER_HOST", 4096),
-		PollInterval:       time.Duration(env.Int("POLL_INTERVAL_SECONDS", 5)) * time.Second,
-		MetricsInterval:    time.Duration(env.Int("METRICS_INTERVAL_SECONDS", 10)) * time.Second,
-		RequestTimeout:     time.Duration(env.Int("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
+		// Default 0: never reap idle connections. See newTransport.
+		IdleConnTimeout: time.Duration(env.Int("IDLE_CONN_TIMEOUT_SECONDS", 0)) * time.Second,
+		PollInterval:    time.Duration(env.Int("POLL_INTERVAL_SECONDS", 5)) * time.Second,
+		MetricsInterval: time.Duration(env.Int("METRICS_INTERVAL_SECONDS", 10)) * time.Second,
+		RequestTimeout:  time.Duration(env.Int("REQUEST_TIMEOUT_SECONDS", 30)) * time.Second,
 	}
 
 	var missing []string

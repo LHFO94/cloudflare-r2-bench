@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"time"
 )
@@ -29,12 +30,19 @@ func newTransport(cfg *Config) *http.Transport {
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     false,
-		TLSClientConfig:       &tls.Config{NextProtos: []string{"http/1.1"}},
-		MaxIdleConns:          0, // unlimited
-		MaxIdleConnsPerHost:   cfg.MaxIdlePerHost,
-		MaxConnsPerHost:       0, // unlimited
-		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:   false,
+		TLSClientConfig:     &tls.Config{NextProtos: []string{"http/1.1"}},
+		MaxIdleConns:        0, // unlimited
+		MaxIdleConnsPerHost: cfg.MaxIdlePerHost,
+		MaxConnsPerHost:     0, // unlimited
+		// Zero disables idle reaping. The default 90s is tuned for
+		// general-purpose clients that should not hoard sockets; here it
+		// actively destroys the thing the warmup exists to build. A run holds
+		// more workers than it has requests in flight, so a large slice of the
+		// pool is idle at any instant, and connections opened together age out
+		// together - producing periodic handshake storms that look like the
+		// target stalling. The process is short-lived, so hoarding is free.
+		IdleConnTimeout:       cfg.IdleConnTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 0,
 		DisableCompression:    true, // payloads are opaque bytes
@@ -87,7 +95,7 @@ func (r *Runner) Warmup(ctx context.Context, conns int) {
 	for i := 0; i < conns; i++ {
 		go func(i int) {
 			defer wg.Done()
-			if _, err := r.fetch(ctx, i%r.cfg.BucketCount, i%r.cfg.Keyspace); err != nil {
+			if _, err := r.fetch(ctx, i%r.cfg.BucketCount, i%r.cfg.Keyspace, nil); err != nil {
 				if ctx.Err() == nil && i == 0 {
 					log.Printf("warmup request failed: %v", err)
 				}
@@ -159,7 +167,7 @@ func (r *Runner) worker(ctx context.Context, tokens <-chan struct{}, m *Metrics)
 		key := rand.IntN(r.cfg.Keyspace)
 
 		start := time.Now()
-		n, err := r.fetch(ctx, bucket, key)
+		n, err := r.fetch(ctx, bucket, key, m)
 		elapsed := uint64(time.Since(start).Microseconds())
 
 		if err != nil {
@@ -178,12 +186,20 @@ type fetchResult struct {
 	status int
 }
 
-func (r *Runner) fetch(ctx context.Context, bucketIdx, keyIdx int) (fetchResult, error) {
+func (r *Runner) fetch(ctx context.Context, bucketIdx, keyIdx int, m *Metrics) (fetchResult, error) {
 	url := fmt.Sprintf("%s/%s/%s", r.cfg.Endpoint, r.naming.BucketName(bucketIdx), r.naming.ObjectKey(keyIdx))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fetchResult{}, err
+	}
+	if m != nil {
+		// GotConn fires once the request has a connection, reporting whether it
+		// came from the pool. Cheap enough at these rates: one closure and one
+		// atomic increment per request.
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { m.ObserveConn(info.Reused) },
+		}))
 	}
 	r.signer.Sign(req, r2.EmptyPayloadSHA256, time.Now())
 

@@ -179,3 +179,39 @@ func TestEmptySnapshotIsSafe(t *testing.T) {
 		t.Error("quantile of empty snapshot should be 0")
 	}
 }
+
+func TestConnectionReuseIsCountedSeparately(t *testing.T) {
+	m := NewMetrics()
+	for range 7 {
+		m.ObserveConn(true)
+	}
+	for range 3 {
+		m.ObserveConn(false)
+	}
+
+	s := m.Snapshot()
+	if s.ReusedConns != 7 || s.NewConns != 3 {
+		t.Fatalf("got %d reused / %d new, want 7 / 3", s.ReusedConns, s.NewConns)
+	}
+}
+
+// The per-tick log reports deltas, so a handshake storm has to show up as a
+// spike in one interval rather than being smeared across the cumulative total.
+func TestConnectionCountersDeltaPerInterval(t *testing.T) {
+	m := NewMetrics()
+	m.ObserveConn(false)
+	m.ObserveConn(true)
+	first := m.Snapshot()
+
+	for range 40 {
+		m.ObserveConn(false)
+	}
+	delta := m.Snapshot().Sub(first)
+
+	if delta.NewConns != 40 {
+		t.Fatalf("delta NewConns = %d, want 40", delta.NewConns)
+	}
+	if delta.ReusedConns != 0 {
+		t.Fatalf("delta ReusedConns = %d, want 0", delta.ReusedConns)
+	}
+}
